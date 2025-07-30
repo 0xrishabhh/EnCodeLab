@@ -1,0 +1,195 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+  }
+  
+  body {
+    @apply bg-gray-50 text-gray-900;
+  }
+  
+  #root {
+    height: 100vh;
+    width: 100vw;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  
+  * {
+    box-sizing: border-box;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    background-color: rgb(37 99 235);
+    color: white;
+    font-weight: 500;
+    padding: 0.5rem 1rem;
+    border-radius: 0.5rem;
+    transition-property: color, background-color, border-color, text-decoration-color, fill, stroke;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 200ms;
+  }
+  
+  .btn-primary:hover {
+    background-color: rgb(29 78 216);
+  }
+  
+  .btn-primary:focus {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+    box-shadow: 0 0 0 2px rgb(59 130 246);
+  }
+  
+  .btn-secondary {
+    background-color: rgb(229 231 235);
+    color: rgb(31 41 55);
+    font-weight: 500;
+    padding: 0.5rem 1rem;
+    border-radius: 0.5rem;
+    transition-property: color, background-color, border-color, text-decoration-color, fill, stroke;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition-duration: 200ms;
+  }
+  
+  .btn-secondary:hover {
+    background-color: rgb(209 213 219);
+  }
+  
+  .btn-secondary:focus {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+    box-shadow: 0 0 0 2px rgb(107 114 128);
+  }
+  
+  .card {
+    background-color: white;
+    border-radius: 0.75rem;
+    box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    border: 1px solid rgb(229 231 235);
+    padding: 1.5rem;
+  }
+  
+  .input-field {
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid rgb(209 213 219);
+    border-radius: 0.5rem;
+  }
+  
+  .input-field:focus {
+    outline: 2px solid transparent;
+    box-shadow: 0 0 0 2px rgb(59 130 246);
+    border-color: transparent;
+  }
+  
+  .select-field {
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid rgb(209 213 219);
+    border-radius: 0.5rem;
+    background-color: white;
+  }
+  
+  .select-field:focus {
+    outline: 2px solid transparent;
+    box-shadow: 0 0 0 2px rgb(59 130 246);
+    border-color: transparent;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Horizontal scrollbar styling */
+::-webkit-scrollbar:horizontal {
+  height: 8px;
+}
+
+/* Ensure content areas can scroll horizontally */
+.panel-content {
+  min-width: 320px;
+}
+
+/* Prevent text wrapping in code areas */
+.code-content {
+  white-space: pre;
+  word-wrap: normal;
+  overflow-wrap: normal;
+}
+
+/* Ensure panels stay within bounds */
+.resizable-panel {
+  max-width: 100vw;
+}
+
+/* Prevent horizontal overflow */
+.flex {
+  min-width: 0;
+}
+
+/* Resizable panel styles */
+.resizable-panel {
+  position: relative;
+  flex-shrink: 0;
+  transition: width 0.1s ease-out;
+}
+
+.resizable-panel.resizing {
+  transition: none;
+}
+
+/* Vertical resizable panel styles */
+.vertical-resizable-panel {
+  position: relative;
+  flex-shrink: 0;
+  transition: height 0.1s ease-out;
+}
+
+.vertical-resizable-panel.resizing {
+  transition: none;
+}
+
+.resizable-panel::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 4px;
+  height: 100%;
+  background: transparent;
+  cursor: col-resize;
+  transition: background-color 0.2s;
+}
+
+.resizable-panel:hover::after {
+  background: rgba(59, 130, 246, 0.3);
+}
+
+.resizable-panel.resizing::after {
+  background: rgba(59, 130, 246, 0.6);
+} 
