@@ -73,6 +73,7 @@ const VerticalResizablePanel = ({
 const CryptoLabPage = () => {
   const [selectedAlgorithm, setSelectedAlgorithm] = useState('');
   const [selectedMode, setSelectedMode] = useState('CBC'); // All AES modes supported
+  const [selectedKeySize, setSelectedKeySize] = useState(''); // AES: 128/192/256, Blowfish: 32-448
   const [inputFormat, setInputFormat] = useState('RAW');
   const [outputFormat, setOutputFormat] = useState('HEX');
   const [inputType, setInputType] = useState('text');
@@ -86,29 +87,66 @@ const CryptoLabPage = () => {
   const [history, setHistory] = useState([]);
   
   // Panel width states - set better default widths for proper initial layout
-  const [operationsWidth, setOperationsWidth] = useState(280);
-  const [benchmarkWidth, setBenchmarkWidth] = useState(400);
+  const [operationsWidth, setOperationsWidth] = useState(216); // 240 - 10% = 216
+  const [benchmarkWidth, setBenchmarkWidth] = useState(506); // 460 + 10% = 506
   
   // Panel height states for input/output sections
-  const [inputHeight, setInputHeight] = useState(300);
+  const [inputHeight, setInputHeight] = useState(400); // Make input panel much bigger than output
 
-  // Reset mode when algorithm changes
+  // Reset mode and key size when algorithm changes
   useEffect(() => {
+    // Reset mode for algorithms that don't support CTR/GCM
     if ((selectedAlgorithm === '3DES' || selectedAlgorithm === 'BLOWFISH') && ['CTR', 'GCM'].includes(selectedMode)) {
       setSelectedMode('CBC'); // Reset to a supported mode for 3DES and Blowfish
     }
+    
+    // RC2 only supports CBC and ECB modes
+    if (selectedAlgorithm === 'RC2' && !['CBC', 'ECB'].includes(selectedMode)) {
+      setSelectedMode('CBC'); // Reset to CBC for RC2
+    }
+    
+    // Set default key sizes based on algorithm
+    if (selectedAlgorithm === 'AES') {
+      setSelectedKeySize('256'); // Default to AES-256
+    } else if (selectedAlgorithm === '3DES') {
+      setSelectedKeySize('168'); // Default to 3DES 168-bit (3-key)
+    } else if (selectedAlgorithm === 'BLOWFISH') {
+      setSelectedKeySize('128'); // Default to 128-bit Blowfish (common usage)
+    } else if (selectedAlgorithm === 'RC2') {
+      setSelectedKeySize('128'); // Default to 128-bit RC2 (common usage)
+    } else if (selectedAlgorithm === 'SM4') {
+      setSelectedKeySize('128'); // SM4 requires exactly 128 bits
+    } else {
+      setSelectedKeySize('');
+    }
   }, [selectedAlgorithm, selectedMode]);
 
-  // Generate random key
+  // Generate random key based on selected algorithm and key size
   const generateRandomKey = () => {
     let keyLength;
-    if (selectedAlgorithm === '3DES') {
-      keyLength = 24; // 192-bit for 3DES
+    
+    if (selectedAlgorithm === 'AES') {
+      // AES key sizes: 128, 192, 256 bits
+      const keySize = parseInt(selectedKeySize);
+      keyLength = keySize / 8; // Convert bits to bytes
+    } else if (selectedAlgorithm === '3DES') {
+      // 3DES key sizes: 112 (16 bytes) or 168 bits (24 bytes)
+      keyLength = selectedKeySize === '112' ? 16 : 24;
     } else if (selectedAlgorithm === 'BLOWFISH') {
-      keyLength = 8; // 64-bit for Blowfish (default)
+      // Blowfish key sizes: 32-448 bits (4-56 bytes)
+      const keySize = parseInt(selectedKeySize);
+      keyLength = keySize / 8; // Convert bits to bytes
+    } else if (selectedAlgorithm === 'RC2') {
+      // RC2 key sizes: 8-1024 bits (1-128 bytes), commonly 40, 64, 128 bits
+      const keySize = parseInt(selectedKeySize);
+      keyLength = keySize / 8; // Convert bits to bytes
+    } else if (selectedAlgorithm === 'SM4') {
+      // SM4 key size: exactly 128 bits (16 bytes)
+      keyLength = 16;
     } else {
-      keyLength = 32; // 256-bit for AES
+      keyLength = 32; // Default fallback
     }
+    
     const array = new Uint8Array(keyLength);
     crypto.getRandomValues(array);
     const hexKey = Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
@@ -118,8 +156,8 @@ const CryptoLabPage = () => {
   // Generate random IV
   const generateRandomIV = () => {
     let ivLength;
-    if (selectedAlgorithm === '3DES' || selectedAlgorithm === 'BLOWFISH') {
-      ivLength = 8; // 64-bit for 3DES and Blowfish
+    if (selectedAlgorithm === '3DES' || selectedAlgorithm === 'BLOWFISH' || selectedAlgorithm === 'RC2') {
+      ivLength = 8; // 64-bit for 3DES, Blowfish, and RC2
     } else {
       ivLength = 16; // 128-bit for AES
     }
@@ -176,7 +214,8 @@ const CryptoLabPage = () => {
         inputFormat: inputFormat,
         outputFormat: outputFormat,
         key: customKey || undefined,
-        iv_or_nonce: customIV || undefined
+        iv_or_nonce: customIV || undefined,
+        keySize: selectedKeySize ? parseInt(selectedKeySize) / 8 : undefined // Convert bits to bytes
       };
 
       let response;
@@ -228,8 +267,8 @@ const CryptoLabPage = () => {
         {/* Left Panel - Operations */}
         <ResizablePanel
           width={operationsWidth}
-          minWidth={250}
-          maxWidth={400}
+          minWidth={194}
+          maxWidth={306}
           onResize={setOperationsWidth}
           className="bg-white border-r border-gray-200 overflow-y-auto flex-shrink-0"
         >
@@ -255,8 +294,8 @@ const CryptoLabPage = () => {
         {/* Middle Panel - Algorithm Configuration */}
         <ResizablePanel
           width={benchmarkWidth}
-          minWidth={300}
-          maxWidth={500}
+          minWidth={385}
+          maxWidth={660}
           onResize={setBenchmarkWidth}
           className="bg-white border-r border-gray-200 flex flex-col flex-shrink-0"
         >
@@ -267,7 +306,10 @@ const CryptoLabPage = () => {
                   onClick={() => {
                     const algorithmConfig = {
                       algorithm: selectedAlgorithm,
+                      keySize: selectedKeySize,
+                      mode: selectedMode,
                       key: customKey,
+                      iv: customIV,
                       operation: operation
                     };
                     const dataStr = JSON.stringify(algorithmConfig, null, 2);
@@ -298,8 +340,11 @@ const CryptoLabPage = () => {
                         reader.onload = (event) => {
                           try {
                             const config = JSON.parse(event.target.result);
-                            setSelectedAlgorithm(config.algorithm || 'AES-GCM');
+                            setSelectedAlgorithm(config.algorithm || '');
+                            setSelectedKeySize(config.keySize || '');
+                            setSelectedMode(config.mode || 'CBC');
                             setCustomKey(config.key || '');
+                            setCustomIV(config.iv || '');
                             setOperation(config.operation || 'encrypt');
                           } catch (error) {
                             alert('Invalid configuration file');
@@ -321,8 +366,12 @@ const CryptoLabPage = () => {
                 <button 
                   onClick={() => {
                     setSelectedAlgorithm('');
+                    setSelectedKeySize('');
                     setCustomKey('');
+                    setCustomIV('');
                     setOperation('encrypt');
+                    setResult(null);
+                    setHistory([]);
                   }}
                   className="p-1 text-gray-400 hover:text-gray-600" 
                   title="Clear Algorithm Config"
@@ -337,65 +386,121 @@ const CryptoLabPage = () => {
           <div className="flex-1 p-4 overflow-y-auto">
             {/* Algorithm Configuration Block - Only show when algorithm is selected */}
             {selectedAlgorithm && (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
+              <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4 shadow-sm">
                 <div className="mb-3">
-                  <h3 className="text-lg font-semibold text-red-900">{selectedAlgorithm}-{selectedMode}</h3>
+                  <h3 className="text-lg font-semibold text-gray-900">{selectedAlgorithm}-{selectedKeySize}-{selectedMode}</h3>
+                </div>
+                
+                {/* Key Size Selection */}
+                <div className="mb-3">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Key Size</label>
+                  <select 
+                    value={selectedKeySize}
+                    onChange={(e) => setSelectedKeySize(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                  >
+                    {selectedAlgorithm === 'AES' && (
+                      <>
+                        <option value="128">128 bits (16 bytes) - AES-128</option>
+                        <option value="192">192 bits (24 bytes) - AES-192</option>
+                        <option value="256">256 bits (32 bytes) - AES-256</option>
+                      </>
+                    )}
+                    {selectedAlgorithm === '3DES' && (
+                      <>
+                        <option value="112">112 bits (16 bytes) - Two-key 3DES</option>
+                        <option value="168">168 bits (24 bytes) - Three-key 3DES</option>
+                      </>
+                    )}
+                    {selectedAlgorithm === 'BLOWFISH' && (
+                      <>
+                        <option value="32">32 bits (4 bytes) - Minimum</option>
+                        <option value="64">64 bits (8 bytes) - Original default</option>
+                        <option value="128">128 bits (16 bytes) - Common usage</option>
+                        <option value="192">192 bits (24 bytes)</option>
+                        <option value="256">256 bits (32 bytes)</option>
+                        <option value="320">320 bits (40 bytes)</option>
+                        <option value="384">384 bits (48 bytes)</option>
+                        <option value="448">448 bits (56 bytes) - Maximum</option>
+                      </>
+                    )}
+                    {selectedAlgorithm === 'RC2' && (
+                      <>
+                        <option value="40">40 bits (5 bytes) - Common effective key length</option>
+                        <option value="64">64 bits (8 bytes) - Common effective key length</option>
+                        <option value="128">128 bits (16 bytes) - Common effective key length</option>
+                        <option value="256">256 bits (32 bytes)</option>
+                        <option value="512">512 bits (64 bytes)</option>
+                        <option value="1024">1024 bits (128 bytes) - Maximum</option>
+                      </>
+                    )}
+                    {selectedAlgorithm === 'SM4' && (
+                      <>
+                        <option value="128">128 bits (16 bytes) - SM4 Standard</option>
+                      </>
+                    )}
+
+                  </select>
                 </div>
                 
                 {/* Key Input */}
                 <div className="mb-3">
                   <label className="block text-sm font-medium text-gray-700 mb-1">Key</label>
                   <div className="flex space-x-2">
-                    <input
-                      type="text"
-                      value={customKey}
-                      onChange={(e) => setCustomKey(e.target.value)}
-                      placeholder="Enter encryption key..."
-                      className="flex-1 px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
-                    />
                     <select className="px-3 py-2 border border-gray-300 rounded text-sm bg-white">
                       <option>HEX</option>
                       <option>RAW</option>
                     </select>
-                    <button
-                      onClick={generateRandomKey}
-                      type="button"
-                      className="p-2 text-gray-400 hover:text-green-600 hover:bg-green-50 border border-gray-200 hover:border-green-200 rounded transition-colors"
-                      title="Generate random key"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
-                      </svg>
-                    </button>
-                  </div>
-                </div>
-                
-                {/* IV Input (for AES, 3DES, and Blowfish modes except ECB) */}
-                {(selectedAlgorithm === 'AES' || selectedAlgorithm === '3DES' || selectedAlgorithm === 'BLOWFISH') && selectedMode !== 'ECB' && (
-                  <div className="mb-3">
-                    <label className="block text-sm font-medium text-gray-700 mb-1">IV</label>
-                    <div className="flex space-x-2">
+                    <div className="flex-1 relative">
                       <input
                         type="text"
-                        value={customIV}
-                        onChange={(e) => setCustomIV(e.target.value)}
-                        placeholder="Enter initialization vector..."
-                        className="flex-1 px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                        value={customKey}
+                        onChange={(e) => setCustomKey(e.target.value)}
+                        placeholder={`Enter ${selectedKeySize}-bit encryption key...`}
+                        className="w-full px-3 py-2 pr-10 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                       />
-                      <select className="px-3 py-2 border border-gray-300 rounded text-sm bg-white">
-                        <option>HEX</option>
-                        <option>RAW</option>
-                      </select>
                       <button
-                        onClick={generateRandomIV}
+                        onClick={generateRandomKey}
                         type="button"
-                        className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 border border-gray-200 hover:border-blue-200 rounded transition-colors"
-                        title="Generate random IV"
+                        className="absolute right-2 top-1/2 transform -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 transition-colors"
+                        title={`Generate random ${selectedKeySize}-bit key`}
                       >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                         </svg>
                       </button>
+                    </div>
+                  </div>
+                </div>
+                
+                {/* IV Input (for AES, 3DES, Blowfish modes except ECB, RC2 CBC mode, and SM4 non-ECB modes) */}
+                {(selectedAlgorithm === 'AES' || selectedAlgorithm === '3DES' || selectedAlgorithm === 'BLOWFISH' || selectedAlgorithm === 'RC2' || selectedAlgorithm === 'SM4') && selectedMode !== 'ECB' && (
+                  <div className="mb-3">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">IV</label>
+                    <div className="flex space-x-2">
+                      <select className="px-3 py-2 border border-gray-300 rounded text-sm bg-white">
+                        <option>HEX</option>
+                        <option>RAW</option>
+                      </select>
+                      <div className="flex-1 relative">
+                        <input
+                          type="text"
+                          value={customIV}
+                          onChange={(e) => setCustomIV(e.target.value)}
+                          placeholder="Enter initialization vector..."
+                          className="w-full px-3 py-2 pr-10 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        <button
+                          onClick={generateRandomIV}
+                          type="button"
+                          className="absolute right-2 top-1/2 transform -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 transition-colors"
+                          title="Generate random IV"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                          </svg>
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -410,9 +515,9 @@ const CryptoLabPage = () => {
                       className="w-full text-sm font-medium text-gray-900 bg-transparent border-none focus:outline-none focus:ring-0"
                     >
                       <option value="CBC">CBC</option>
-                      <option value="CFB">CFB</option>
-                      <option value="OFB">OFB</option>
-                      {selectedAlgorithm === 'AES' && (
+                      {selectedAlgorithm !== 'RC2' && <option value="CFB">CFB</option>}
+                      {selectedAlgorithm !== 'RC2' && <option value="OFB">OFB</option>}
+                      {(selectedAlgorithm === 'AES' || selectedAlgorithm === 'SM4') && (
                         <>
                           <option value="CTR">CTR</option>
                           <option value="GCM">GCM</option>
@@ -456,9 +561,9 @@ const CryptoLabPage = () => {
                     handleProcess();
                   }}
                   disabled={isLoading || (!inputText && !inputFile)}
-                  className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-medium transition-colors"
+                  className="flex-1 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 disabled:opacity-50 disabled:cursor-not-allowed disabled:from-gray-400 disabled:to-gray-500 text-white px-6 py-3 rounded-lg font-semibold shadow-lg hover:shadow-xl transition-all duration-200 transform hover:scale-105 disabled:hover:scale-100"
                 >
-                  Encrypt
+                  🔒 Encrypt
                 </button>
                 <button
                   onClick={() => {
@@ -466,9 +571,9 @@ const CryptoLabPage = () => {
                     handleProcess();
                   }}
                   disabled={isLoading || (!inputText && !inputFile)}
-                  className="flex-1 bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-medium transition-colors"
+                  className="flex-1 bg-gradient-to-r from-gray-600 to-gray-700 hover:from-gray-700 hover:to-gray-800 disabled:opacity-50 disabled:cursor-not-allowed disabled:from-gray-400 disabled:to-gray-500 text-white px-6 py-3 rounded-lg font-semibold shadow-lg hover:shadow-xl transition-all duration-200 transform hover:scale-105 disabled:hover:scale-100"
                 >
-                  Decrypt
+                  🔓 Decrypt
                 </button>
               </div>
             )}
@@ -526,25 +631,7 @@ const CryptoLabPage = () => {
             )}
           </div>
           
-          <div className="p-4 border-t border-gray-200">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-600">STEP</span>
-              <button
-                onClick={handleProcess}
-                disabled={isLoading || (!inputText && !inputFile)}
-                className="bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2 rounded-lg font-medium flex items-center space-x-2"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                </svg>
-                <span>BAKE!</span>
-              </button>
-              <label className="flex items-center space-x-2 text-sm text-gray-600">
-                <input type="checkbox" className="rounded" />
-                <span>Auto Bake</span>
-              </label>
-            </div>
-          </div>
+
         </ResizablePanel>
 
         {/* Right Panel - Input/Output */}
@@ -552,8 +639,8 @@ const CryptoLabPage = () => {
           {/* Input Section */}
           <VerticalResizablePanel
             height={inputHeight}
-            minHeight={150}
-            maxHeight={600}
+            minHeight={250}
+            maxHeight={700}
             onResize={setInputHeight}
             className="border-b border-gray-200 flex flex-col relative"
           >
@@ -561,8 +648,8 @@ const CryptoLabPage = () => {
               <h2 className="text-lg font-semibold text-gray-900">Input</h2>
               <div className="flex items-center space-x-4">
                 <div className="flex flex-col items-end space-y-1 text-xs text-gray-500">
-                  <span>length: {inputText.length + (inputFile ? inputFile.size : 0)}</span>
-                  <span>lines: {inputText.split('\n').length}</span>
+                  <span>length: {inputText.length}</span>
+                  <span>lines: {inputText.split(/\r?\n/).length}</span>
                 </div>
                 <div className="flex items-center space-x-1">
                 <button 
@@ -657,7 +744,7 @@ const CryptoLabPage = () => {
                   <div className="flex flex-col items-end space-y-1 text-xs text-gray-500">
                     <span>time: {result.executionTime || 'N/A'}</span>
                     <span>length: {result.output.length}</span>
-                    <span>lines: {result.output.split('\n').length}</span>
+                    <span>lines: {result.output.split(/\r?\n/).length}</span>
                   </div>
                 )}
                 <div className="flex items-center space-x-1">

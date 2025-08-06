@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EnCode Lab - Logo Demo</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .logo-icon {
+            animation: subtle-glow 3s ease-in-out infinite alternate;
+        }
+        
+        @keyframes subtle-glow {
+            0% { filter: drop-shadow(0 0 5px rgba(37, 99, 235, 0.3)); }
+            100% { filter: drop-shadow(0 0 15px rgba(37, 99, 235, 0.5)); }
+        }
+        
+        .rotate-slow {
+            animation: rotate 8s linear infinite;
+        }
+        
+        @keyframes rotate {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-gray-50 to-blue-50 min-h-screen">
+    <div class="container mx-auto px-4 py-12">
+        <!-- Header -->
+        <div class="text-center mb-16">
+            <div class="flex justify-center mb-6">
+                <div class="w-20 h-20 text-blue-600 logo-icon">
+                    <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" class="w-full h-full">
+                        <!-- Hexagonal Background -->
+                        <path d="M8 6L16 2L24 6V10L28 12V20L24 22V26L16 30L8 26V22L4 20V12L8 10V6Z" 
+                              fill="currentColor" fill-opacity="0.1" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                        
+                        <!-- Lock Body -->
+                        <rect x="11" y="14" width="10" height="8" fill="currentColor" rx="1"/>
+                        
+                        <!-- Lock Shackle -->
+                        <path d="M13 14V12C13 10.3431 14.3431 9 16 9C17.6569 9 19 10.3431 19 12V14"
+                              stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/>
+                        
+                        <!-- Key Hole -->
+                        <circle cx="16" cy="17" r="1.2" fill="white"/>
+                        <rect x="15.4" y="17.8" width="1.2" height="2" fill="white" rx="0.6"/>
+                        
+                        <!-- Decorative Binary Dots -->
+                        <circle cx="6" cy="8" r="0.8" fill="currentColor" fill-opacity="0.4"/>
+                        <circle cx="26" cy="8" r="0.8" fill="currentColor" fill-opacity="0.4"/>
+                        <circle cx="6" cy="24" r="0.8" fill="currentColor" fill-opacity="0.4"/>
+                        <circle cx="26" cy="24" r="0.8" fill="currentColor" fill-opacity="0.4"/>
+                    </svg>
+                </div>
+            </div>
+            <h1 class="text-5xl font-bold mb-4">
+                <span class="text-blue-600">En</span><span class="text-gray-900">Code</span><span class="text-blue-500 font-light">Lab</span>
+            </h1>
+            <p class="text-xl text-gray-600 max-w-2xl mx-auto">
+                Learn, Test, and Compare Encryption Algorithms
+            </p>
+        </div>
+
+        <!-- Logo Variations Grid -->
+        <div class="grid md:grid-cols-3 gap-8 mb-16">
+            <!-- Navigation Logo -->
+            <div class="bg-white rounded-2xl p-8 shadow-xl border border-gray-100">
+                <h3 class="text-lg font-semibold mb-6 text-gray-700 text-center">Navigation Version</h3>
+                <div class="flex items-center justify-center space-x-3 py-4">
+                    <div class="w-8 h-8 text-blue-600">
+                        <svg viewBox="0 0 32 32" fill="none" class="w-full h-full">
+                            <path d="M8 6L16 2L24 6V10L28 12V20L24 22V26L16 30L8 26V22L4 20V12L8 10V6Z" 
+                                  fill="currentColor" fill-opacity="0.1" stroke="currentColor" stroke-width="1.5"/>
+                            <rect x="11" y="14" width="10" height="8" fill="currentColor" rx="1"/>
+                            <path d="M13 14V12C13 10.3431 14.3431 9 16 9C17.6569 9 19 10.3431 19 12V14"
+                                  stroke="currentColor" stroke-width="1.8" fill="none"/>
+                            <circle cx="16" cy="17" r="1.2" fill="white"/>
+                            <rect x="15.4" y="17.8" width="1.2" height="2" fill="white" rx="0.6"/>
+                        </svg>
+                    </div>
+                    <h1 class="text-xl font-bold">
+                        <span class="text-blue-600">En</span><span class="text-gray-900">Code</span><span class="text-blue-500 font-light">Lab</span>
+                    </h1>
+                </div>
+                <p class="text-sm text-gray-500 text-center mt-4">Perfect for navigation bars</p>
+            </div>
+
+            <!-- Hero Logo -->
+            <div class="bg-white rounded-2xl p-8 shadow-xl border border-gray-100">
+                <h3 class="text-lg font-semibold mb-6 text-gray-700 text-center">Hero Version</h3>
+                <div class="flex items-center justify-center space-x-4 py-4">
+                    <div class="w-12 h-12 text-blue-600">
+                        <svg viewBox="0 0 32 32" fill="none" class="w-full h-full">
+                            <path d="M8 6L16 2L24 6V10L28 12V20L24 22V26L16 30L8 26V22L4 20V12L8 10V6Z" 
+                                  fill="currentColor" fill-opacity="0.1" stroke="currentColor" stroke-width="1.5"/>
+                            <rect x="11" y="14" width="10" height="8" fill="currentColor" rx="1"/>
+                            <path d="M13 14V12C13 10.3431 14.3431 9 16 9C17.6569 9 19 10.3431 19 12V14"
+                                  stroke="currentColor" stroke-width="1.8" fill="none"/>
+                            <circle cx="16" cy="17" r="1.2" fill="white"/>
+                            <rect x="15.4" y="17.8" width="1.2" height="2" fill="white" rx="0.6"/>
+                        </svg>
+                    </div>
+                    <h1 class="text-3xl font-bold">
+                        <span class="text-blue-600">En</span><span class="text-gray-900">Code</span><span class="text-blue-500 font-light">Lab</span>
+                    </h1>
+                </div>
+                <p class="text-sm text-gray-500 text-center mt-4">Large landing page version</p>
+            </div>
+
+            <!-- Icon Only -->
+            <div class="bg-white rounded-2xl p-8 shadow-xl border border-gray-100">
+                <h3 class="text-lg font-semibold mb-6 text-gray-700 text-center">Icon Only</h3>
+                <div class="flex items-center justify-center py-4">
+                    <div class="w-16 h-16 text-blue-600">
+                        <svg viewBox="0 0 32 32" fill="none" class="w-full h-full">
+                            <path d="M8 6L16 2L24 6V10L28 12V20L24 22V26L16 30L8 26V22L4 20V12L8 10V6Z" 
+                                  fill="currentColor" fill-opacity="0.1" stroke="currentColor" stroke-width="1.5"/>
+                            <rect x="11" y="14" width="10" height="8" fill="currentColor" rx="1"/>
+                            <path d="M13 14V12C13 10.3431 14.3431 9 16 9C17.6569 9 19 10.3431 19 12V14"
+                                  stroke="currentColor" stroke-width="1.8" fill="none"/>
+                            <circle cx="16" cy="17" r="1.2" fill="white"/>
+                            <rect x="15.4" y="17.8" width="1.2" height="2" fill="white" rx="0.6"/>
+                        </svg>
+                    </div>
+                </div>
+                <p class="text-sm text-gray-500 text-center mt-4">Favicon or compact spaces</p>
+            </div>
+        </div>
+
+        <!-- Features -->
+        <div class="bg-white rounded-2xl p-8 shadow-xl border border-gray-100 mb-12">
+            <h2 class="text-2xl font-bold text-center mb-8 text-gray-900">Design Features</h2>
+            <div class="grid md:grid-cols-3 gap-6">
+                <div class="text-center p-4">
+                    <div class="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                        <span class="text-2xl">🔒</span>
+                    </div>
+                    <h3 class="font-semibold mb-2">Security Focus</h3>
+                    <p class="text-sm text-gray-600">Hexagonal lock design represents encryption and security</p>
+                </div>
+                <div class="text-center p-4">
+                    <div class="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                        <span class="text-2xl">✨</span>
+                    </div>
+                    <h3 class="font-semibold mb-2">Minimalistic</h3>
+                    <p class="text-sm text-gray-600">Clean lines and modern design principles</p>
+                </div>
+                <div class="text-center p-4">
+                    <div class="w-12 h-12 bg-purple-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                        <span class="text-2xl">📱</span>
+                    </div>
+                    <h3 class="font-semibold mb-2">Scalable</h3>
+                    <p class="text-sm text-gray-600">Works perfectly at any size from favicon to billboard</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Call to Action -->
+        <div class="text-center">
+            <p class="text-gray-600 mb-4">Ready to secure your digital future?</p>
+            <button class="bg-blue-600 text-white px-8 py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors">
+                Launch EnCode Lab
+            </button>
+        </div>
+    </div>
+</body>
+</html>

@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import Navigation from './components/Navigation';
 import CryptoLabPage from './components/CryptoLabPage';
 import BenchmarkPage from './components/BenchmarkPage';
+import LogoShowcase from './components/LogoShowcase';
 
 function App() {
   return (
@@ -12,6 +13,7 @@ function App() {
         <Routes>
           <Route path="/" element={<CryptoLabPage />} />
           <Route path="/benchmark" element={<BenchmarkPage />} />
+          <Route path="/logo-showcase" element={<LogoShowcase />} />
         </Routes>
       </div>
     </Router>

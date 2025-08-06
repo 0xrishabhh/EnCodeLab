@@ -7,7 +7,8 @@
     height: 100%;
     margin: 0;
     padding: 0;
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
   }
   
   body {
@@ -15,11 +16,10 @@
   }
   
   #root {
-    height: 100vh;
+    min-height: 100vh;
     width: 100vw;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
   }
   
   * {

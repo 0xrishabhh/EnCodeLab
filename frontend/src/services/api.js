@@ -15,7 +15,8 @@ export const cryptoAPI = {
           inputFormat: data.inputFormat || 'RAW',
           outputFormat: data.outputFormat || 'HEX',
           key: data.key || undefined,
-          iv_or_nonce: data.iv_or_nonce
+          iv_or_nonce: data.iv_or_nonce,
+          keySize: data.keySize
         })
       });
 

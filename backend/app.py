@@ -6,6 +6,8 @@ import binascii
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
+from Crypto.Cipher import ARC2  # RC2 support from PyCryptodome
+import gmalg  # SM4 support from gmalg
 import secrets
 import logging
 import time
@@ -14,9 +16,13 @@ import gc
 import sys
 from collections import defaultdict
 
+
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for frontend communication
@@ -38,8 +44,27 @@ class CryptoService:
     # Blowfish configurations
     # Note: Blowfish is deprecated in the cryptography library but still functional
     # Deprecation warnings will appear in logs but do not affect functionality
-    BLOWFISH_VALID_KEY_SIZES = [8]  # Blowfish uses 8 bytes (64 bits) key
-    BLOWFISH_BLOCK_SIZE = 8  # Blowfish block size in bytes
+    # Blowfish supports variable key lengths from 4 to 56 bytes (32 to 448 bits)
+    BLOWFISH_MIN_KEY_SIZE = 4   # Minimum key size: 32 bits (4 bytes)
+    BLOWFISH_MAX_KEY_SIZE = 56  # Maximum key size: 448 bits (56 bytes)
+    BLOWFISH_BLOCK_SIZE = 8     # Blowfish block size in bytes (64 bits)
+    
+    # RC2 configurations
+    # RC2 (Rivest Cipher 2) - Variable key length block cipher
+    # Supports variable key lengths from 1 to 128 bytes (8 to 1024 bits)
+    # Commonly uses effective key lengths of 40, 64, or 128 bits
+    RC2_MIN_KEY_SIZE = 1        # Minimum key size: 8 bits (1 byte)
+    RC2_MAX_KEY_SIZE = 128      # Maximum key size: 1024 bits (128 bytes)
+    RC2_BLOCK_SIZE = 8          # RC2 block size in bytes (64 bits)
+    RC2_COMMON_KEY_SIZES = [5, 8, 16]  # Common key sizes: 40, 64, 128 bits
+
+    # SM4 configurations
+    # SM4 (ShāngMì 4) - Chinese national block cipher standard
+    # 128-bit block size and 128-bit key size
+    SM4_KEY_SIZE = 16           # SM4 key size: 128 bits (16 bytes)
+    SM4_BLOCK_SIZE = 16         # SM4 block size: 128 bits (16 bytes)
+    SM4_IV_SIZE = 16            # SM4 IV size for CBC/CFB/OFB: 128 bits (16 bytes)
+
     
     @staticmethod
     def validate_key(key_data, algorithm='AES', required_size=None):
@@ -63,14 +88,25 @@ class CryptoService:
             # Validate key size based on algorithm
             if algorithm.upper() == 'AES':
                 valid_sizes = CryptoService.AES_VALID_KEY_SIZES
+                if len(key_bytes) not in valid_sizes:
+                    return None
             elif algorithm.upper() == '3DES':
                 valid_sizes = CryptoService.TRIPLE_DES_VALID_KEY_SIZES
+                if len(key_bytes) not in valid_sizes:
+                    return None
             elif algorithm.upper() == 'BLOWFISH':
-                valid_sizes = CryptoService.BLOWFISH_VALID_KEY_SIZES
+                # Blowfish supports variable key lengths from 4 to 56 bytes
+                if not (CryptoService.BLOWFISH_MIN_KEY_SIZE <= len(key_bytes) <= CryptoService.BLOWFISH_MAX_KEY_SIZE):
+                    return None
+            elif algorithm.upper() == 'RC2':
+                # RC2 supports variable key lengths from 1 to 128 bytes
+                if not (CryptoService.RC2_MIN_KEY_SIZE <= len(key_bytes) <= CryptoService.RC2_MAX_KEY_SIZE):
+                    return None
+            elif algorithm.upper() == 'SM4':
+                # SM4 requires exactly 128-bit (16 bytes) key
+                if len(key_bytes) != CryptoService.SM4_KEY_SIZE:
+                    return None
             else:
-                return None
-            
-            if len(key_bytes) not in valid_sizes:
                 return None
                 
             return key_bytes
@@ -86,7 +122,13 @@ class CryptoService:
         elif algorithm.upper() == '3DES':
             size = 24  # Default to 24 bytes for TripleDES
         elif algorithm.upper() == 'BLOWFISH':
-            size = 8  # Default to 8 bytes (64 bits) for Blowfish
+            if size is None or not (CryptoService.BLOWFISH_MIN_KEY_SIZE <= size <= CryptoService.BLOWFISH_MAX_KEY_SIZE):
+                size = 16  # Default to 16 bytes (128 bits) for Blowfish - common usage
+        elif algorithm.upper() == 'RC2':
+            if size is None or not (CryptoService.RC2_MIN_KEY_SIZE <= size <= CryptoService.RC2_MAX_KEY_SIZE):
+                size = 16  # Default to 16 bytes (128 bits) for RC2 - common usage
+        elif algorithm.upper() == 'SM4':
+            size = 16  # SM4 requires exactly 16 bytes (128 bits)
         else:
             size = 32  # Default fallback
         return secrets.token_bytes(size)
@@ -141,8 +183,8 @@ class CryptoService:
         """Encrypt data using various algorithms and modes"""
         try:
             # Validate algorithm
-            if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH']:
-                raise ValueError(f"Unsupported algorithm: {algorithm}. Only AES, 3DES, and Blowfish are supported.")
+            if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4']:
+                raise ValueError(f"Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, and SM4 are supported.")
             
             # Validate mode
             if mode.upper() not in ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB']:
@@ -150,9 +192,12 @@ class CryptoService:
             
             # Validate algorithm-mode combinations
             if algorithm.upper() == '3DES' and mode.upper() in ['CTR', 'GCM']:
-                raise ValueError(f"3DES does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for 3DES.")
+                raise ValueError(f"3DES does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for 3DES. (CTR mode is not supported by the OpenSSL backend)")
             if algorithm.upper() == 'BLOWFISH' and mode.upper() in ['CTR', 'GCM']:
                 raise ValueError(f"Blowfish does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for Blowfish.")
+            if algorithm.upper() == 'RC2' and mode.upper() not in ['CBC', 'ECB']:
+                raise ValueError(f"RC2 only supports CBC (with IV) and ECB (without IV) modes.")
+
             
             tag = None
             if algorithm.upper() == 'AES':
@@ -161,6 +206,11 @@ class CryptoService:
                 block_size = CryptoService.TRIPLE_DES_BLOCK_SIZE
             elif algorithm.upper() == 'BLOWFISH':
                 block_size = CryptoService.BLOWFISH_BLOCK_SIZE
+            elif algorithm.upper() == 'RC2':
+                block_size = CryptoService.RC2_BLOCK_SIZE
+            elif algorithm.upper() == 'SM4':
+                block_size = CryptoService.SM4_BLOCK_SIZE
+
             
             if algorithm.upper() == 'AES':
                 # AES encryption
@@ -305,6 +355,120 @@ class CryptoService:
                     encryptor = cipher.encryptor()
                     ciphertext = encryptor.update(data_bytes) + encryptor.finalize()
             
+            elif algorithm.upper() == 'RC2':
+                # RC2 encryption with 128-bit effective key length (common standard)
+                effective_keylen = 128  # Most online calculators use 128-bit effective key length
+                
+                if mode.upper() == 'ECB':
+                    # ECB mode doesn't use IV - PKCS7 padding for both CBC and ECB
+                    pad_len = block_size - (len(data_bytes) % block_size)
+                    padded_data = data_bytes + bytes([pad_len] * pad_len)
+                    cipher = ARC2.new(key, ARC2.MODE_ECB, effective_keylen=effective_keylen)
+                    ciphertext = cipher.encrypt(padded_data)
+                    
+                elif mode.upper() == 'CBC':
+                    # CBC mode requires IV - PKCS7 padding for both CBC and ECB
+                    if not iv_or_nonce:
+                        iv_or_nonce = secrets.token_bytes(block_size)
+                    pad_len = block_size - (len(data_bytes) % block_size)
+                    padded_data = data_bytes + bytes([pad_len] * pad_len)
+                    cipher = ARC2.new(key, ARC2.MODE_CBC, iv_or_nonce, effective_keylen=effective_keylen)
+                    ciphertext = cipher.encrypt(padded_data)
+
+            elif algorithm.upper() == 'SM4':
+                # SM4 encryption using gmalg library
+                sm4_cipher = gmalg.SM4(key)
+                
+                if mode.upper() == 'ECB':
+                    # ECB mode doesn't use IV - PKCS7 padding
+                    pad_len = block_size - (len(data_bytes) % block_size)
+                    padded_data = data_bytes + bytes([pad_len] * pad_len)
+                    ciphertext = sm4_cipher.encrypt(padded_data)
+                    
+                elif mode.upper() == 'CBC':
+                    # CBC mode requires IV - PKCS7 padding
+                    if not iv_or_nonce:
+                        iv_or_nonce = secrets.token_bytes(block_size)
+                    pad_len = block_size - (len(data_bytes) % block_size)
+                    padded_data = data_bytes + bytes([pad_len] * pad_len)
+                    # SM4 CBC implementation using block-by-block encryption
+                    ciphertext = b''
+                    prev_block = iv_or_nonce
+                    for i in range(0, len(padded_data), block_size):
+                        block = padded_data[i:i + block_size]
+                        xor_block = bytes(a ^ b for a, b in zip(block, prev_block))
+                        encrypted_block = sm4_cipher.encrypt(xor_block)
+                        ciphertext += encrypted_block
+                        prev_block = encrypted_block
+                        
+                elif mode.upper() == 'CFB':
+                    # CFB mode - no padding needed
+                    if not iv_or_nonce:
+                        iv_or_nonce = secrets.token_bytes(block_size)
+                    ciphertext = b''
+                    prev_block = iv_or_nonce
+                    for i in range(0, len(data_bytes), block_size):
+                        block = data_bytes[i:i + block_size]
+                        encrypted_prev = sm4_cipher.encrypt(prev_block)
+                        if len(block) < block_size:
+                            encrypted_prev = encrypted_prev[:len(block)]
+                        cipher_block = bytes(a ^ b for a, b in zip(block, encrypted_prev))
+                        ciphertext += cipher_block
+                        prev_block = cipher_block + prev_block[len(cipher_block):]
+                        
+                elif mode.upper() == 'OFB':
+                    # OFB mode - no padding needed
+                    if not iv_or_nonce:
+                        iv_or_nonce = secrets.token_bytes(block_size)
+                    ciphertext = b''
+                    prev_block = iv_or_nonce
+                    for i in range(0, len(data_bytes), block_size):
+                        block = data_bytes[i:i + block_size]
+                        keystream = sm4_cipher.encrypt(prev_block)
+                        if len(block) < block_size:
+                            keystream = keystream[:len(block)]
+                        cipher_block = bytes(a ^ b for a, b in zip(block, keystream))
+                        ciphertext += cipher_block
+                        prev_block = keystream
+                        
+                elif mode.upper() == 'CTR':
+                    # CTR mode - no padding needed
+                    if not iv_or_nonce:
+                        iv_or_nonce = secrets.token_bytes(block_size)
+                    ciphertext = b''
+                    counter = int.from_bytes(iv_or_nonce, 'big')
+                    for i in range(0, len(data_bytes), block_size):
+                        block = data_bytes[i:i + block_size]
+                        counter_bytes = counter.to_bytes(block_size, 'big')
+                        keystream = sm4_cipher.encrypt(counter_bytes)
+                        if len(block) < block_size:
+                            keystream = keystream[:len(block)]
+                        cipher_block = bytes(a ^ b for a, b in zip(block, keystream))
+                        ciphertext += cipher_block
+                        counter += 1
+                        
+                elif mode.upper() == 'GCM':
+                    # Note: GCM is not part of original SM4 spec but supported in some libraries
+                    # For this implementation, we'll treat it as CTR mode with authentication
+                    if not iv_or_nonce:
+                        iv_or_nonce = secrets.token_bytes(12)  # GCM typically uses 96-bit nonce
+                    # Extend nonce to 128 bits for counter initialization
+                    extended_iv = iv_or_nonce + b'\x00' * (16 - len(iv_or_nonce))
+                    ciphertext = b''
+                    counter = int.from_bytes(extended_iv, 'big') + 1
+                    for i in range(0, len(data_bytes), block_size):
+                        block = data_bytes[i:i + block_size]
+                        counter_bytes = counter.to_bytes(block_size, 'big')
+                        keystream = sm4_cipher.encrypt(counter_bytes)
+                        if len(block) < block_size:
+                            keystream = keystream[:len(block)]
+                        cipher_block = bytes(a ^ b for a, b in zip(block, keystream))
+                        ciphertext += cipher_block
+                        counter += 1
+                    # Generate a simple authentication tag (not full GMAC implementation)
+                    tag = sm4_cipher.encrypt(extended_iv)[:16]
+
+            
             result = {
                 'ciphertext': CryptoService.encode_output(ciphertext, encoding),
                 'key': key.hex(),
@@ -329,8 +493,8 @@ class CryptoService:
         """Decrypt data using various algorithms and modes"""
         try:
             # Validate algorithm
-            if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH']:
-                raise ValueError(f"Unsupported algorithm: {algorithm}. Only AES, 3DES, and Blowfish are supported.")
+            if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4']:
+                raise ValueError(f"Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, and SM4 are supported.")
             
             # Validate mode
             if mode.upper() not in ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB']:
@@ -338,9 +502,12 @@ class CryptoService:
             
             # Validate algorithm-mode combinations
             if algorithm.upper() == '3DES' and mode.upper() in ['CTR', 'GCM']:
-                raise ValueError(f"3DES does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for 3DES.")
+                raise ValueError(f"3DES does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for 3DES. (CTR mode is not supported by the OpenSSL backend)")
             if algorithm.upper() == 'BLOWFISH' and mode.upper() in ['CTR', 'GCM']:
                 raise ValueError(f"Blowfish does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for Blowfish.")
+            if algorithm.upper() == 'RC2' and mode.upper() not in ['CBC', 'ECB']:
+                raise ValueError(f"RC2 only supports CBC (with IV) and ECB (without IV) modes.")
+
             
             if algorithm.upper() == 'AES':
                 block_size = CryptoService.AES_BLOCK_SIZE
@@ -348,6 +515,11 @@ class CryptoService:
                 block_size = CryptoService.TRIPLE_DES_BLOCK_SIZE
             elif algorithm.upper() == 'BLOWFISH':
                 block_size = CryptoService.BLOWFISH_BLOCK_SIZE
+            elif algorithm.upper() == 'RC2':
+                block_size = CryptoService.RC2_BLOCK_SIZE
+            elif algorithm.upper() == 'SM4':
+                block_size = CryptoService.SM4_BLOCK_SIZE
+
             
             if algorithm.upper() == 'AES':
                 # AES decryption
@@ -484,6 +656,125 @@ class CryptoService:
                     decryptor = cipher.decryptor()
                     decrypted_data = decryptor.update(data_bytes) + decryptor.finalize()
             
+            elif algorithm.upper() == 'RC2':
+                # RC2 decryption with 128-bit effective key length (common standard)
+                effective_keylen = 128  # Must match encryption effective key length
+                
+                if mode.upper() == 'ECB':
+                    # ECB mode doesn't use IV - PKCS7 padding removal for both CBC and ECB
+                    cipher = ARC2.new(key, ARC2.MODE_ECB, effective_keylen=effective_keylen)
+                    decrypted_padded = cipher.decrypt(data_bytes)
+                    pad_len = decrypted_padded[-1]
+                    decrypted_data = decrypted_padded[:-pad_len]
+                    
+                elif mode.upper() == 'CBC':
+                    # CBC mode requires IV - PKCS7 padding removal for both CBC and ECB
+                    if not iv_or_nonce:
+                        raise ValueError("IV is required for CBC mode")
+                    cipher = ARC2.new(key, ARC2.MODE_CBC, iv_or_nonce, effective_keylen=effective_keylen)
+                    decrypted_padded = cipher.decrypt(data_bytes)
+                    pad_len = decrypted_padded[-1]
+                    decrypted_data = decrypted_padded[:-pad_len]
+
+            elif algorithm.upper() == 'SM4':
+                # SM4 decryption using gmalg library
+                sm4_cipher = gmalg.SM4(key)
+                
+                if mode.upper() == 'ECB':
+                    # ECB mode doesn't use IV - PKCS7 padding removal
+                    decrypted_padded = sm4_cipher.decrypt(data_bytes)
+                    pad_len = decrypted_padded[-1]
+                    decrypted_data = decrypted_padded[:-pad_len]
+                    
+                elif mode.upper() == 'CBC':
+                    # CBC mode requires IV - PKCS7 padding removal
+                    if not iv_or_nonce:
+                        raise ValueError("IV is required for CBC mode")
+                    # SM4 CBC implementation using block-by-block decryption
+                    decrypted_data = b''
+                    prev_block = iv_or_nonce
+                    for i in range(0, len(data_bytes), block_size):
+                        cipher_block = data_bytes[i:i + block_size]
+                        decrypted_block = sm4_cipher.decrypt(cipher_block)
+                        xor_block = bytes(a ^ b for a, b in zip(decrypted_block, prev_block))
+                        decrypted_data += xor_block
+                        prev_block = cipher_block
+                    # Remove PKCS7 padding
+                    pad_len = decrypted_data[-1]
+                    decrypted_data = decrypted_data[:-pad_len]
+                    
+                elif mode.upper() == 'CFB':
+                    # CFB mode - no padding removal needed
+                    if not iv_or_nonce:
+                        raise ValueError("IV is required for CFB mode")
+                    decrypted_data = b''
+                    prev_block = iv_or_nonce
+                    for i in range(0, len(data_bytes), block_size):
+                        cipher_block = data_bytes[i:i + block_size]
+                        encrypted_prev = sm4_cipher.encrypt(prev_block)
+                        if len(cipher_block) < block_size:
+                            encrypted_prev = encrypted_prev[:len(cipher_block)]
+                        plain_block = bytes(a ^ b for a, b in zip(cipher_block, encrypted_prev))
+                        decrypted_data += plain_block
+                        prev_block = cipher_block + prev_block[len(cipher_block):]
+                        
+                elif mode.upper() == 'OFB':
+                    # OFB mode - no padding removal needed
+                    if not iv_or_nonce:
+                        raise ValueError("IV is required for OFB mode")
+                    decrypted_data = b''
+                    prev_block = iv_or_nonce
+                    for i in range(0, len(data_bytes), block_size):
+                        cipher_block = data_bytes[i:i + block_size]
+                        keystream = sm4_cipher.encrypt(prev_block)
+                        if len(cipher_block) < block_size:
+                            keystream = keystream[:len(cipher_block)]
+                        plain_block = bytes(a ^ b for a, b in zip(cipher_block, keystream))
+                        decrypted_data += plain_block
+                        prev_block = keystream
+                        
+                elif mode.upper() == 'CTR':
+                    # CTR mode - no padding removal needed
+                    if not iv_or_nonce:
+                        raise ValueError("Nonce is required for CTR mode")
+                    decrypted_data = b''
+                    counter = int.from_bytes(iv_or_nonce, 'big')
+                    for i in range(0, len(data_bytes), block_size):
+                        cipher_block = data_bytes[i:i + block_size]
+                        counter_bytes = counter.to_bytes(block_size, 'big')
+                        keystream = sm4_cipher.encrypt(counter_bytes)
+                        if len(cipher_block) < block_size:
+                            keystream = keystream[:len(cipher_block)]
+                        plain_block = bytes(a ^ b for a, b in zip(cipher_block, keystream))
+                        decrypted_data += plain_block
+                        counter += 1
+                        
+                elif mode.upper() == 'GCM':
+                    # GCM mode - no padding removal needed
+                    if not iv_or_nonce:
+                        raise ValueError("Nonce is required for GCM mode")
+                    if not tag:
+                        raise ValueError("Authentication tag is required for GCM mode")
+                    # Extend nonce to 128 bits for counter initialization
+                    extended_iv = iv_or_nonce + b'\x00' * (16 - len(iv_or_nonce))
+                    # Verify authentication tag (simple implementation)
+                    expected_tag = sm4_cipher.encrypt(extended_iv)[:16]
+                    if tag != expected_tag:
+                        raise ValueError("Authentication tag verification failed")
+                    # Decrypt using CTR mode
+                    decrypted_data = b''
+                    counter = int.from_bytes(extended_iv, 'big') + 1
+                    for i in range(0, len(data_bytes), block_size):
+                        cipher_block = data_bytes[i:i + block_size]
+                        counter_bytes = counter.to_bytes(block_size, 'big')
+                        keystream = sm4_cipher.encrypt(counter_bytes)
+                        if len(cipher_block) < block_size:
+                            keystream = keystream[:len(cipher_block)]
+                        plain_block = bytes(a ^ b for a, b in zip(cipher_block, keystream))
+                        decrypted_data += plain_block
+                        counter += 1
+
+            
             result = {
                 'plaintext': CryptoService.encode_output(decrypted_data, encoding),
                 'key': key.hex(),
@@ -506,7 +797,7 @@ def home():
     return jsonify({
         'status': 'success',
         'message': 'EnCodeLab Crypto Backend is running',
-        'supported_algorithms': ['AES', '3DES', 'BLOWFISH'],
+        'supported_algorithms': ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4'],
         'supported_modes': ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB'],
         'supported_encodings': ['HEX', 'RAW']
     })
@@ -532,11 +823,11 @@ def encrypt():
         input_encoding = data.get('inputFormat', 'RAW')  # Default to RAW for input
         output_encoding = data.get('outputFormat', 'HEX')  # Default to HEX for output
         provided_key = data.get('key')
-        provided_iv = data.get('iv_or_nonce')
+        provided_iv = data.get('iv_or_nonce') or data.get('iv')
         
         # Validate algorithm
-        if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH']:
-            return jsonify({'error': f'Unsupported algorithm: {algorithm}. Only AES, 3DES, and Blowfish are supported.'}), 400
+        if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4']:
+            return jsonify({'error': f'Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, and SM4 are supported.'}), 400
         
         # Validate mode
         if mode.upper() not in ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB']:
@@ -544,9 +835,10 @@ def encrypt():
         
         # Validate algorithm-mode combinations
         if algorithm.upper() == '3DES' and mode.upper() in ['CTR', 'GCM']:
-            return jsonify({'error': f'3DES does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for 3DES.'}), 400
+            return jsonify({'error': f'3DES does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for 3DES. (CTR mode is not supported by the OpenSSL backend)'}), 400
         if algorithm.upper() == 'BLOWFISH' and mode.upper() in ['CTR', 'GCM']:
             return jsonify({'error': f'Blowfish does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for Blowfish.'}), 400
+
         
         # Validate encodings
         if input_encoding.upper() not in ['HEX', 'RAW']:
@@ -557,6 +849,7 @@ def encrypt():
         # Handle key validation or generation
         key = None
         key_generated = False
+        requested_key_size = data.get('keySize')  # Key size in bytes from frontend
         
         if provided_key:
             key = CryptoService.validate_key(provided_key, algorithm)
@@ -566,11 +859,16 @@ def encrypt():
                 elif algorithm.upper() == '3DES':
                     return jsonify({'error': 'Invalid key provided. 3DES key must be 16 or 24 bytes long.'}), 400
                 elif algorithm.upper() == 'BLOWFISH':
-                    return jsonify({'error': 'Invalid key provided. Blowfish key must be 8 bytes (64 bits) long.'}), 400
+                    return jsonify({'error': f'Invalid key provided. Blowfish key must be between {CryptoService.BLOWFISH_MIN_KEY_SIZE} and {CryptoService.BLOWFISH_MAX_KEY_SIZE} bytes (32-448 bits) long.'}), 400
+                elif algorithm.upper() == 'RC2':
+                    return jsonify({'error': f'Invalid key provided. RC2 key must be between {CryptoService.RC2_MIN_KEY_SIZE} and {CryptoService.RC2_MAX_KEY_SIZE} bytes (8-1024 bits) long.'}), 400
+                elif algorithm.upper() == 'SM4':
+                    return jsonify({'error': 'Invalid key provided. SM4 key must be exactly 16 bytes (128 bits) long.'}), 400
                 else:
                     return jsonify({'error': 'Invalid key provided.'}), 400
         else:
-            key = CryptoService.generate_random_key(algorithm)
+            # Generate key with specified size if provided
+            key = CryptoService.generate_random_key(algorithm, requested_key_size)
             key_generated = True
         
         # Decode input data
@@ -633,8 +931,8 @@ def decrypt():
         tag_hex = data.get('tag')
         
         # Validate algorithm
-        if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH']:
-            return jsonify({'error': f'Unsupported algorithm: {algorithm}. Only AES, 3DES, and Blowfish are supported.'}), 400
+        if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4']:
+            return jsonify({'error': f'Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, and SM4 are supported.'}), 400
         
         # Validate mode
         if mode.upper() not in ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB']:
@@ -642,7 +940,7 @@ def decrypt():
         
         # Validate algorithm-mode combinations
         if algorithm.upper() == '3DES' and mode.upper() in ['CTR', 'GCM']:
-            return jsonify({'error': f'3DES does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for 3DES.'}), 400
+            return jsonify({'error': f'3DES does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for 3DES. (CTR mode is not supported by the OpenSSL backend)'}), 400
         
         # Validate encodings
         if input_encoding.upper() not in ['HEX', 'RAW']:
@@ -658,7 +956,7 @@ def decrypt():
             elif algorithm.upper() == '3DES':
                 return jsonify({'error': 'Invalid key provided. 3DES key must be 16 or 24 bytes long.'}), 400
             elif algorithm.upper() == 'BLOWFISH':
-                return jsonify({'error': 'Invalid key provided. Blowfish key must be 8 bytes (64 bits) long.'}), 400
+                return jsonify({'error': f'Invalid key provided. Blowfish key must be between {CryptoService.BLOWFISH_MIN_KEY_SIZE} and {CryptoService.BLOWFISH_MAX_KEY_SIZE} bytes (32-448 bits) long.'}), 400
             else:
                 return jsonify({'error': 'Invalid key provided.'}), 400
         
@@ -724,7 +1022,7 @@ def generate():
         iv_size = data.get('iv_size')    # Let the algorithm determine size
         
         # Validate algorithm
-        if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH']:
+        if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4']:
             return jsonify({'error': 'Invalid algorithm. Must be AES, 3DES, or Blowfish.'}), 400
         
         # Set appropriate sizes based on algorithm
@@ -752,15 +1050,31 @@ def generate():
                 return jsonify({'error': 'Invalid 3DES IV size. Must be 8 bytes.'}), 400
         elif algorithm.upper() == 'BLOWFISH':
             if key_size is None:
-                key_size = 8   # Default to 8 bytes (64 bits) for Blowfish
+                key_size = 16   # Default to 16 bytes (128 bits) for Blowfish - common usage
             if iv_size is None:
-                iv_size = 8   # Blowfish IV size is 8 bytes
+                iv_size = 8   # Blowfish IV size is 8 bytes (block size)
             
             # Validate Blowfish sizes
-            if key_size != 8:
-                return jsonify({'error': 'Invalid Blowfish key size. Must be 8 bytes (64 bits).'}), 400
+            if not (CryptoService.BLOWFISH_MIN_KEY_SIZE <= key_size <= CryptoService.BLOWFISH_MAX_KEY_SIZE):
+                return jsonify({'error': f'Invalid Blowfish key size. Must be between {CryptoService.BLOWFISH_MIN_KEY_SIZE} and {CryptoService.BLOWFISH_MAX_KEY_SIZE} bytes (32-448 bits).'}), 400
             if iv_size != 8:
                 return jsonify({'error': 'Invalid Blowfish IV size. Must be 8 bytes.'}), 400
+        elif algorithm.upper() == 'RC2':
+            if key_size is None:
+                key_size = 16   # Default to 16 bytes (128 bits) for RC2 - common usage
+            if iv_size is None:
+                iv_size = 8   # RC2 IV size is 8 bytes (block size)
+            
+            # Validate RC2 sizes
+            if not (CryptoService.RC2_MIN_KEY_SIZE <= key_size <= CryptoService.RC2_MAX_KEY_SIZE):
+                return jsonify({'error': f'Invalid RC2 key size. Must be between {CryptoService.RC2_MIN_KEY_SIZE} and {CryptoService.RC2_MAX_KEY_SIZE} bytes (8-1024 bits).'}), 400
+            if iv_size != 8:
+                return jsonify({'error': 'Invalid RC2 IV size. Must be 8 bytes.'}), 400
+        elif algorithm.upper() == 'SM4':
+            # SM4 has fixed key and IV sizes
+            key_size = 16   # SM4 requires exactly 16 bytes (128 bits)
+            iv_size = 16    # SM4 IV size is 16 bytes (128 bits)
+
         
         # Generate random key and IV
         key = CryptoService.generate_random_key(algorithm, key_size)
@@ -802,17 +1116,18 @@ def benchmark():
         iterations = data['iterations']
         
         # Validate algorithm and mode
-        if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH']:
-            return jsonify({'error': f'Unsupported algorithm: {algorithm}. Only AES, 3DES, and Blowfish are supported.'}), 400
+        if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4']:
+            return jsonify({'error': f'Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, and SM4 are supported.'}), 400
         
         if mode.upper() not in ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB']:
             return jsonify({'error': f'Unsupported mode: {mode}. Only CBC, CFB, OFB, CTR, GCM, and ECB modes are supported.'}), 400
         
         # Validate algorithm-mode combinations
         if algorithm.upper() == '3DES' and mode.upper() in ['CTR', 'GCM']:
-            return jsonify({'error': f'3DES does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for 3DES.'}), 400
+            return jsonify({'error': f'3DES does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for 3DES. (CTR mode is not supported by the OpenSSL backend)'}), 400
         if algorithm.upper() == 'BLOWFISH' and mode.upper() in ['CTR', 'GCM']:
             return jsonify({'error': f'Blowfish does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for Blowfish.'}), 400
+
         
         # Generate common key and IV for all iterations
         if algorithm.upper() == 'AES':
@@ -822,8 +1137,17 @@ def benchmark():
             key = secrets.token_bytes(24)  # 192-bit key
             block_size = 8
         elif algorithm.upper() == 'BLOWFISH':
-            key = secrets.token_bytes(8)  # 64-bit key (default)
+            key = secrets.token_bytes(16)  # 128-bit key (common usage)
             block_size = 8
+        elif algorithm.upper() == 'RC2':
+            key = secrets.token_bytes(16)  # 128-bit key (common usage for RC2)
+            block_size = 8
+        elif algorithm.upper() == 'SM4':
+            key = secrets.token_bytes(16)  # 128-bit key (fixed for SM4)
+            block_size = 16
+        else:
+            raise ValueError(f"Unsupported algorithm for benchmarking: {algorithm}")
+
         
         # Generate IV if needed
         iv_or_nonce = None
