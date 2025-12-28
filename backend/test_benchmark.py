@@ -34,6 +34,24 @@ def test_benchmark():
             "mode": "ECB",
             "testData": "A" * 1024,  # 1KB of data
             "iterations": 3
+        },
+        {
+            "name": "Salsa20 Stream",
+            "algorithm": "SALSA20",
+            "mode": "STREAM",
+            "testData": "Hello World! This is a test message.",
+            "iterations": 5,
+            "rounds": 20,
+            "counter": 0
+        },
+        {
+            "name": "ChaCha20 Stream",
+            "algorithm": "CHACHA20",
+            "mode": "STREAM",
+            "testData": "Hello World! This is a test message.",
+            "iterations": 5,
+            "rounds": 20,
+            "counter": 0
         }
     ]
     
@@ -50,7 +68,9 @@ def test_benchmark():
                     "algorithm": config["algorithm"],
                     "mode": config["mode"],
                     "testData": config["testData"],
-                    "iterations": config["iterations"]
+                    "iterations": config["iterations"],
+                    **({"rounds": config["rounds"]} if "rounds" in config else {}),
+                    **({"counter": config["counter"]} if "counter" in config else {})
                 },
                 timeout=30
             )

@@ -4,6 +4,35 @@ import ResizablePanel from './ResizablePanel';
 import AlgorithmSelector from './AlgorithmSelector';
 import { cryptoAPI } from '../services/api';
 
+const spinnerCSS = `
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+}
+.spinner {
+  width: 48px;
+  height: 48px;
+  animation: spinner-rotate 1s linear infinite;
+}
+.spinner circle {
+  fill: none;
+  stroke: #3b82f6;
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-dasharray: 90 150;
+  stroke-dashoffset: 0;
+  animation: spinner-dash 1.5s ease-in-out infinite;
+}
+@keyframes spinner-rotate {
+  100% { transform: rotate(360deg); }
+}
+@keyframes spinner-dash {
+  0% { stroke-dasharray: 1, 200; stroke-dashoffset: 0; }
+  50% { stroke-dasharray: 90, 150; stroke-dashoffset: -40px; }
+  100% { stroke-dasharray: 90, 150; stroke-dashoffset: -120px; }
+}
+`;
+
 // Vertical Resizable Panel Component
 const VerticalResizablePanel = ({
   children,
@@ -71,19 +100,22 @@ const VerticalResizablePanel = ({
 };
 
 const CryptoLabPage = () => {
+  const [tabs, setTabs] = useState([{ id: 1, name: 'Tab 1', inputText: '', inputFile: null, result: null }]);
+  const [activeTabId, setActiveTabId] = useState(1);
   const [selectedAlgorithm, setSelectedAlgorithm] = useState('');
   const [selectedMode, setSelectedMode] = useState('CBC'); // All AES modes supported
   const [selectedKeySize, setSelectedKeySize] = useState(''); // AES: 128/192/256, Blowfish: 32-448
   const [inputFormat, setInputFormat] = useState('RAW');
   const [outputFormat, setOutputFormat] = useState('HEX');
   const [inputType, setInputType] = useState('text');
-  const [inputText, setInputText] = useState('');
-  const [inputFile, setInputFile] = useState(null);
   const [customKey, setCustomKey] = useState('');
   const [customIV, setCustomIV] = useState('');
+  const [salsaRounds, setSalsaRounds] = useState(20);
+  const [salsaCounter, setSalsaCounter] = useState(0);
+  const [chachaRounds, setChachaRounds] = useState(20);
+  const [chachaCounter, setChachaCounter] = useState(0);
   const [operation, setOperation] = useState('encrypt');
   const [isLoading, setIsLoading] = useState(false);
-  const [result, setResult] = useState(null);
   const [history, setHistory] = useState([]);
   
   // Panel width states - set better default widths for proper initial layout
@@ -93,11 +125,137 @@ const CryptoLabPage = () => {
   // Panel height states for input/output sections
   const [inputHeight, setInputHeight] = useState(400); // Make input panel much bigger than output
 
+  const activeTab = tabs.find(tab => tab.id === activeTabId) || tabs[0];
+  const inputText = activeTab?.inputText || '';
+  const inputFile = activeTab?.inputFile || null;
+  const result = activeTab?.result || null;
+
+  const updateActiveTab = (updates) => {
+    setTabs(prevTabs => prevTabs.map(tab => (
+      tab.id === activeTabId ? { ...tab, ...updates } : tab
+    )));
+  };
+
+  const handleAddTab = () => {
+    setTabs(prevTabs => {
+      const newId = prevTabs.length ? Math.max(...prevTabs.map(tab => tab.id)) + 1 : 1;
+      const newTab = { id: newId, name: `Tab ${prevTabs.length + 1}`, inputText: '', inputFile: null, result: null };
+      setActiveTabId(newId);
+      return [...prevTabs, newTab];
+    });
+  };
+
+  const setActiveInputText = (text) => updateActiveTab({ inputText: text });
+  const setActiveInputFile = (file) => updateActiveTab({ inputFile: file });
+  const setActiveResult = (value) => updateActiveTab({ result: value });
+
+  const handleCloseTab = (tabId) => {
+    setTabs(prevTabs => {
+      if (prevTabs.length === 1) {
+        // Keep at least one tab; clearing its contents instead of removing it
+        setActiveTabId(prevTabs[0].id);
+        return prevTabs.map(tab => ({
+          ...tab,
+          inputText: '',
+          inputFile: null,
+          result: null
+        }));
+      }
+
+      const closingIndex = prevTabs.findIndex(tab => tab.id === tabId);
+      const nextTabs = prevTabs.filter(tab => tab.id !== tabId);
+
+      if (tabId === activeTabId) {
+        const fallbackIndex = Math.max(0, closingIndex - 1);
+        const fallbackTabId = nextTabs[fallbackIndex]?.id || nextTabs[0].id;
+        setActiveTabId(fallbackTabId);
+      }
+
+      return nextTabs;
+    });
+  };
+
+  const handlePrevTab = () => {
+    const currentIndex = tabs.findIndex(tab => tab.id === activeTabId);
+    if (currentIndex > 0) {
+      setActiveTabId(tabs[currentIndex - 1].id);
+    }
+  };
+
+  const handleNextTab = () => {
+    const currentIndex = tabs.findIndex(tab => tab.id === activeTabId);
+    if (currentIndex < tabs.length - 1) {
+      setActiveTabId(tabs[currentIndex + 1].id);
+    }
+  };
+
+  const TabBar = () => (
+    <div className="flex items-center space-x-2 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1">
+      <button
+        onClick={handlePrevTab}
+        className="p-1 text-gray-500 hover:text-gray-700 disabled:opacity-40"
+        disabled={tabs.length <= 1 || tabs[0]?.id === activeTabId}
+        title="Previous tab"
+      >
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+        </svg>
+      </button>
+      {tabs.map(tab => (
+        <div
+          key={tab.id}
+          className={`flex items-center rounded-md border px-3 py-1 text-xs font-medium transition-colors ${tab.id === activeTabId ? 'bg-white border-blue-300 text-blue-700 shadow-sm' : 'bg-gray-100 border-gray-200 text-gray-600 hover:border-gray-300'}`}
+        >
+          <button
+            onClick={() => setActiveTabId(tab.id)}
+            className="focus:outline-none"
+            title={`Switch to ${tab.name}`}
+          >
+            {tab.name}
+          </button>
+          {tabs.length > 1 && (
+            <button
+              onClick={() => handleCloseTab(tab.id)}
+              className="ml-2 text-gray-400 hover:text-gray-600 focus:outline-none"
+              title="Close tab"
+            >
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
+        </div>
+      ))}
+      <button
+        onClick={handleNextTab}
+        className="p-1 text-gray-500 hover:text-gray-700 disabled:opacity-40"
+        disabled={tabs.length <= 1 || tabs[tabs.length - 1]?.id === activeTabId}
+        title="Next tab"
+      >
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+      </button>
+      <button
+        onClick={handleAddTab}
+        className="p-1 text-gray-600 hover:text-gray-800 border border-gray-300 rounded-full"
+        title="Add tab"
+      >
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v12m6-6H6" />
+        </svg>
+      </button>
+    </div>
+  );
+
   // Reset mode and key size when algorithm changes
   useEffect(() => {
     // Reset mode for algorithms that don't support CTR/GCM
     if ((selectedAlgorithm === '3DES' || selectedAlgorithm === 'BLOWFISH') && ['CTR', 'GCM'].includes(selectedMode)) {
       setSelectedMode('CBC'); // Reset to a supported mode for 3DES and Blowfish
+    }
+    if (!(selectedAlgorithm === 'SALSA20' || selectedAlgorithm === 'CHACHA20') && selectedMode === 'STREAM') {
+      setSelectedMode('CBC');
     }
     
     // RC2 only supports CBC and ECB modes
@@ -116,10 +274,28 @@ const CryptoLabPage = () => {
       setSelectedKeySize('128'); // Default to 128-bit RC2 (common usage)
     } else if (selectedAlgorithm === 'SM4') {
       setSelectedKeySize('128'); // SM4 requires exactly 128 bits
+    } else if (selectedAlgorithm === 'SALSA20' || selectedAlgorithm === 'CHACHA20') {
+      setSelectedKeySize('256'); // Stream ciphers default to 256-bit
     } else {
       setSelectedKeySize('');
     }
   }, [selectedAlgorithm, selectedMode]);
+
+  useEffect(() => {
+    if (selectedAlgorithm === 'SALSA20' || selectedAlgorithm === 'CHACHA20') {
+      setSelectedMode('STREAM');
+      setSelectedKeySize('256');
+    }
+  }, [selectedAlgorithm]);
+
+  useEffect(() => {
+    if (selectedAlgorithm === 'SALSA20') {
+      setSelectedMode('STREAM');
+      setSelectedKeySize('256');
+      setSalsaRounds(20);
+      setSalsaCounter(0);
+    }
+  }, [selectedAlgorithm]);
 
   // Generate random key based on selected algorithm and key size
   const generateRandomKey = () => {
@@ -143,6 +319,8 @@ const CryptoLabPage = () => {
     } else if (selectedAlgorithm === 'SM4') {
       // SM4 key size: exactly 128 bits (16 bytes)
       keyLength = 16;
+    } else if (selectedAlgorithm === 'CHACHA20') {
+      keyLength = 32; // 256-bit
     } else {
       keyLength = 32; // Default fallback
     }
@@ -158,6 +336,10 @@ const CryptoLabPage = () => {
     let ivLength;
     if (selectedAlgorithm === '3DES' || selectedAlgorithm === 'BLOWFISH' || selectedAlgorithm === 'RC2') {
       ivLength = 8; // 64-bit for 3DES, Blowfish, and RC2
+    } else if (selectedAlgorithm === 'SALSA20') {
+      ivLength = 8; // Salsa20 nonce size
+    } else if (selectedAlgorithm === 'CHACHA20') {
+      ivLength = 12; // ChaCha20 nonce size (IETF)
     } else {
       ivLength = 16; // 128-bit for AES
     }
@@ -217,6 +399,13 @@ const CryptoLabPage = () => {
         iv_or_nonce: customIV || undefined,
         keySize: selectedKeySize ? parseInt(selectedKeySize) / 8 : undefined // Convert bits to bytes
       };
+      if (selectedAlgorithm === 'SALSA20') {
+        requestData.rounds = parseInt(salsaRounds, 10) || 20;
+        requestData.counter = parseInt(salsaCounter, 10) || 0;
+      } else if (selectedAlgorithm === 'CHACHA20') {
+        requestData.rounds = parseInt(chachaRounds, 10) || 20;
+        requestData.counter = parseInt(chachaCounter, 10) || 0;
+      }
 
       let response;
       if (operation === 'encrypt') {
@@ -238,7 +427,7 @@ const CryptoLabPage = () => {
       }
 
       if (response.success) {
-        setResult(response);
+        setActiveResult(response);
         
         // Add to history
         const historyItem = {
@@ -261,16 +450,18 @@ const CryptoLabPage = () => {
   };
 
   return (
-    <div className="h-screen bg-gray-50 flex flex-col">
+    <>
+      <style>{spinnerCSS}</style>
+      <div className="h-screen flex flex-col bg-white overflow-hidden">
       {/* Main Content with Three Panels */}
-      <div className="flex flex-1 overflow-hidden justify-start">
+      <div className="flex flex-1 overflow-hidden justify-start min-h-0">
         {/* Left Panel - Operations */}
         <ResizablePanel
           width={operationsWidth}
           minWidth={194}
           maxWidth={306}
           onResize={setOperationsWidth}
-          className="bg-white border-r border-gray-200 overflow-y-auto flex-shrink-0"
+          className="bg-white border-r border-gray-200 overflow-y-auto flex-shrink-0 min-h-0"
         >
           <div className="p-4">
             <h2 className="text-lg font-semibold text-gray-900 mb-3">Operations</h2>
@@ -297,7 +488,7 @@ const CryptoLabPage = () => {
           minWidth={385}
           maxWidth={660}
           onResize={setBenchmarkWidth}
-          className="bg-white border-r border-gray-200 flex flex-col flex-shrink-0"
+          className="bg-white border-r border-gray-200 flex flex-col flex-shrink-0 min-h-0"
         >
           <div className="p-4 border-b border-gray-200">
             <h2 className="text-lg font-semibold text-gray-900">Algorithm</h2>
@@ -369,8 +560,10 @@ const CryptoLabPage = () => {
                     setSelectedKeySize('');
                     setCustomKey('');
                     setCustomIV('');
+                    setSalsaRounds(20);
+                    setSalsaCounter(0);
                     setOperation('encrypt');
-                    setResult(null);
+                    setActiveResult(null);
                     setHistory([]);
                   }}
                   className="p-1 text-gray-400 hover:text-gray-600" 
@@ -383,7 +576,7 @@ const CryptoLabPage = () => {
               </div>
           </div>
           
-          <div className="flex-1 p-4 overflow-y-auto">
+          <div className="flex-1 p-4 overflow-y-auto min-h-0">
             {/* Algorithm Configuration Block - Only show when algorithm is selected */}
             {selectedAlgorithm && (
               <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4 shadow-sm">
@@ -439,6 +632,17 @@ const CryptoLabPage = () => {
                         <option value="128">128 bits (16 bytes) - SM4 Standard</option>
                       </>
                     )}
+                    {selectedAlgorithm === 'CHACHA20' && (
+                      <>
+                        <option value="256">256 bits (32 bytes) - Required</option>
+                      </>
+                    )}
+                    {selectedAlgorithm === 'SALSA20' && (
+                      <>
+                        <option value="128">128 bits (16 bytes)</option>
+                        <option value="256">256 bits (32 bytes) - Recommended</option>
+                      </>
+                    )}
 
                   </select>
                 </div>
@@ -451,18 +655,28 @@ const CryptoLabPage = () => {
                       <option>HEX</option>
                       <option>RAW</option>
                     </select>
-                    <div className="flex-1 relative">
+                    <div className="flex-1 relative flex items-center space-x-2">
                       <input
                         type="text"
                         value={customKey}
                         onChange={(e) => setCustomKey(e.target.value)}
                         placeholder={`Enter ${selectedKeySize}-bit encryption key...`}
-                        className="w-full px-3 py-2 pr-10 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                       />
+                      <button
+                        onClick={() => copyToClipboard(customKey)}
+                        type="button"
+                        className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
+                        title="Copy key"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                      </button>
                       <button
                         onClick={generateRandomKey}
                         type="button"
-                        className="absolute right-2 top-1/2 transform -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 transition-colors"
+                        className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
                         title={`Generate random ${selectedKeySize}-bit key`}
                       >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -474,27 +688,37 @@ const CryptoLabPage = () => {
                 </div>
                 
                 {/* IV Input (for AES, 3DES, Blowfish modes except ECB, RC2 CBC mode, and SM4 non-ECB modes) */}
-                {(selectedAlgorithm === 'AES' || selectedAlgorithm === '3DES' || selectedAlgorithm === 'BLOWFISH' || selectedAlgorithm === 'RC2' || selectedAlgorithm === 'SM4') && selectedMode !== 'ECB' && (
+                {(selectedAlgorithm === 'SALSA20' || selectedAlgorithm === 'CHACHA20' || selectedAlgorithm === 'AES' || selectedAlgorithm === '3DES' || selectedAlgorithm === 'BLOWFISH' || selectedAlgorithm === 'RC2' || selectedAlgorithm === 'SM4') && selectedMode !== 'ECB' && (
                   <div className="mb-3">
-                    <label className="block text-sm font-medium text-gray-700 mb-1">IV</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">{(selectedAlgorithm === 'SALSA20' || selectedAlgorithm === 'CHACHA20') ? 'Nonce' : 'IV'}</label>
                     <div className="flex space-x-2">
                       <select className="px-3 py-2 border border-gray-300 rounded text-sm bg-white">
                         <option>HEX</option>
                         <option>RAW</option>
                       </select>
-                      <div className="flex-1 relative">
+                      <div className="flex-1 relative flex items-center space-x-2">
                         <input
                           type="text"
                           value={customIV}
                           onChange={(e) => setCustomIV(e.target.value)}
-                          placeholder="Enter initialization vector..."
-                          className="w-full px-3 py-2 pr-10 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder={selectedAlgorithm === 'SALSA20' ? 'Enter 8-byte nonce...' : selectedAlgorithm === 'CHACHA20' ? 'Enter 12-byte nonce...' : 'Enter initialization vector...'}
+                          className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                         />
+                        <button
+                          onClick={() => copyToClipboard(customIV)}
+                          type="button"
+                          className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
+                          title="Copy"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                          </svg>
+                        </button>
                         <button
                           onClick={generateRandomIV}
                           type="button"
-                          className="absolute right-2 top-1/2 transform -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 transition-colors"
-                          title="Generate random IV"
+                          className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
+                          title={(selectedAlgorithm === 'SALSA20' || selectedAlgorithm === 'CHACHA20') ? 'Generate random nonce' : 'Generate random IV'}
                         >
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -509,22 +733,28 @@ const CryptoLabPage = () => {
                 <div className="grid grid-cols-3 gap-2">
                   <div className="bg-white border border-gray-200 rounded p-2">
                     <div className="text-xs text-gray-500 mb-1">Mode</div>
-                                        <select
-                      value={selectedMode}
-                      onChange={(e) => setSelectedMode(e.target.value)}
-                      className="w-full text-sm font-medium text-gray-900 bg-transparent border-none focus:outline-none focus:ring-0"
-                    >
-                      <option value="CBC">CBC</option>
-                      {selectedAlgorithm !== 'RC2' && <option value="CFB">CFB</option>}
-                      {selectedAlgorithm !== 'RC2' && <option value="OFB">OFB</option>}
-                      {(selectedAlgorithm === 'AES' || selectedAlgorithm === 'SM4') && (
-                        <>
-                          <option value="CTR">CTR</option>
-                          <option value="GCM">GCM</option>
-                        </>
-                      )}
-                      <option value="ECB">ECB</option>
-                    </select>
+                    {selectedAlgorithm === 'SALSA20' || selectedAlgorithm === 'CHACHA20' ? (
+                      <div className="w-full text-sm font-medium text-gray-900 bg-transparent border-none">
+                        STREAM
+                      </div>
+                    ) : (
+                      <select
+                        value={selectedMode}
+                        onChange={(e) => setSelectedMode(e.target.value)}
+                        className="w-full text-sm font-medium text-gray-900 bg-transparent border-none focus:outline-none focus:ring-0"
+                      >
+                        <option value="CBC">CBC</option>
+                        {selectedAlgorithm !== 'RC2' && <option value="CFB">CFB</option>}
+                        {selectedAlgorithm !== 'RC2' && <option value="OFB">OFB</option>}
+                        {(selectedAlgorithm === 'AES' || selectedAlgorithm === 'SM4') && (
+                          <>
+                            <option value="CTR">CTR</option>
+                            <option value="GCM">GCM</option>
+                          </>
+                        )}
+                        <option value="ECB">ECB</option>
+                      </select>
+                    )}
                   </div>
                   <div className="bg-white border border-gray-200 rounded p-2">
                     <div className="text-xs text-gray-500 mb-1">Input</div>
@@ -537,87 +767,87 @@ const CryptoLabPage = () => {
                       <option value="HEX">HEX</option>
                     </select>
                   </div>
-                  <div className="bg-white border border-gray-200 rounded p-2">
-                    <div className="text-xs text-gray-500 mb-1">Output</div>
-                    <select 
-                      value={outputFormat}
-                      onChange={(e) => setOutputFormat(e.target.value)}
+                <div className="bg-white border border-gray-200 rounded p-2">
+                  <div className="text-xs text-gray-500 mb-1">Output</div>
+                  <select 
+                    value={outputFormat}
+                    onChange={(e) => setOutputFormat(e.target.value)}
                       className="w-full text-sm font-medium text-gray-900 bg-transparent border-none focus:outline-none focus:ring-0"
                     >
                       <option value="HEX">HEX</option>
                       <option value="RAW">RAW</option>
+                  </select>
+                </div>
+              </div>
+
+              {(selectedAlgorithm === 'SALSA20' || selectedAlgorithm === 'CHACHA20') && (
+                <div className="grid grid-cols-2 gap-2 mt-2">
+                  <div className="bg-white border border-gray-200 rounded p-2">
+                    <div className="text-xs text-gray-500 mb-1">Counter</div>
+                    <input
+                      type="number"
+                      min="0"
+                      value={selectedAlgorithm === 'SALSA20' ? salsaCounter : chachaCounter}
+                      onChange={(e) => selectedAlgorithm === 'SALSA20' ? setSalsaCounter(e.target.value) : setChachaCounter(e.target.value)}
+                      className="w-full text-sm font-medium text-gray-900 bg-transparent border-none focus:outline-none focus:ring-0"
+                    />
+                  </div>
+                  <div className="bg-white border border-gray-200 rounded p-2">
+                    <div className="text-xs text-gray-500 mb-1">Rounds</div>
+                    <select
+                      value={selectedAlgorithm === 'SALSA20' ? salsaRounds : chachaRounds}
+                      onChange={(e) => selectedAlgorithm === 'SALSA20' ? setSalsaRounds(e.target.value) : setChachaRounds(e.target.value)}
+                      className="w-full text-sm font-medium text-gray-900 bg-transparent border-none focus:outline-none focus:ring-0"
+                    >
+                      <option value="8">8 (not recommended)</option>
+                      <option value="12">12 (acceptable)</option>
+                      <option value="20">20 (recommended)</option>
                     </select>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
+          )}
             
             {/* Encrypt/Decrypt Buttons */}
             {selectedAlgorithm && (
-              <div className="flex space-x-3 mt-4">
+              <div className="flex items-center space-x-4 mt-4">
+                <label className="relative inline-flex items-center cursor-pointer scale-90">
+                  <input
+                    type="checkbox"
+                    className="sr-only peer"
+                    checked={operation === 'encrypt'}
+                    onChange={() => setOperation(operation === 'encrypt' ? 'decrypt' : 'encrypt')}
+                    aria-label="Toggle encrypt/decrypt"
+                  />
+                  <div className="group peer ring-0 bg-rose-400 rounded-full outline-none duration-300 after:duration-300 w-20 h-10 shadow-md peer-checked:bg-emerald-500 peer-focus:outline-none after:content-[''] after:rounded-full after:absolute after:bg-gray-50 after:outline-none after:h-8 after:w-8 after:top-1 after:left-1 after:flex after:justify-center after:items-center peer-checked:after:translate-x-10 peer-hover:after:scale-95">
+                    <svg className="absolute top-1 left-11 stroke-gray-900 w-8 h-8" viewBox="0 0 100 100">
+                      <path d="M50,18A19.9,19.9,0,0,0,30,38v8a8,8,0,0,0-8,8V74a8,8,0,0,0,8,8H70a8,8,0,0,0,8-8V54a8,8,0,0,0-8-8H38V38a12,12,0,0,1,23.6-3,4,4,0,1,0,7.8-2A20.1,20.1,0,0,0,50,18Z" />
+                    </svg>
+                    <svg className="absolute top-1 left-1 stroke-gray-900 w-8 h-8" viewBox="0 0 100 100">
+                      <path d="M30,46V38a20,20,0,0,1,40,0v8a8,8,0,0,1,8,8V74a8,8,0,0,1-8,8H30a8,8,0,0,1-8-8V54A8,8,0,0,1,30,46Zm32-8v8H38V38a12,12,0,0,1,24,0Z" fillRule="evenodd" />
+                    </svg>
+                  </div>
+                </label>
                 <button
-                  onClick={() => {
-                    setOperation('encrypt');
-                    handleProcess();
-                  }}
+                  onClick={handleProcess}
                   disabled={isLoading || (!inputText && !inputFile)}
-                  className="flex-1 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 disabled:opacity-50 disabled:cursor-not-allowed disabled:from-gray-400 disabled:to-gray-500 text-white px-6 py-3 rounded-lg font-semibold shadow-lg hover:shadow-xl transition-all duration-200 transform hover:scale-105 disabled:hover:scale-100"
+                  className="flex-1 bg-gradient-to-r from-gray-800 to-gray-900 hover:from-gray-900 hover:to-black disabled:opacity-50 disabled:cursor-not-allowed text-white px-5 py-2.5 rounded-lg font-semibold shadow-lg hover:shadow-xl transition-all duration-200 transform hover:scale-105 disabled:hover:scale-100"
                 >
-                  🔒 Encrypt
-                </button>
-                <button
-                  onClick={() => {
-                    setOperation('decrypt');
-                    handleProcess();
-                  }}
-                  disabled={isLoading || (!inputText && !inputFile)}
-                  className="flex-1 bg-gradient-to-r from-gray-600 to-gray-700 hover:from-gray-700 hover:to-gray-800 disabled:opacity-50 disabled:cursor-not-allowed disabled:from-gray-400 disabled:to-gray-500 text-white px-6 py-3 rounded-lg font-semibold shadow-lg hover:shadow-xl transition-all duration-200 transform hover:scale-105 disabled:hover:scale-100"
-                >
-                  🔓 Decrypt
+                  {isLoading ? (
+                    <span className="flex items-center justify-center">
+                      <svg className="spinner" viewBox="25 25 50 50" aria-label="Loading">
+                        <circle r="20" cy="50" cx="50"></circle>
+                      </svg>
+                    </span>
+                  ) : (
+                    operation === 'encrypt' ? 'Encrypt' : 'Decrypt'
+                  )}
                 </button>
               </div>
             )}
 
             {/* Encryption Details */}
-            {result && (result.key || (result.iv_or_nonce && selectedMode !== 'ECB')) && (
-              <div className="mt-4 p-3 bg-gray-50 rounded border">
-                <h4 className="font-semibold text-gray-800 mb-2">Encryption Details:</h4>
-                {result.key && (
-                  <div className="mb-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-gray-600 text-sm">Key:</span>
-                      <button
-                        onClick={() => copyToClipboard(result.key)}
-                        className="p-1 text-gray-400 hover:text-gray-600 transition-colors"
-                        title="Copy key to clipboard"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                        </svg>
-                      </button>
-                    </div>
-                    <div className="text-xs text-gray-800 break-all font-mono">{result.key}</div>
-                  </div>
-                )}
-                {result.iv_or_nonce && selectedMode !== 'ECB' && (
-                  <div className="mb-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-gray-600 text-sm">IV:</span>
-                      <button
-                        onClick={() => copyToClipboard(result.iv_or_nonce)}
-                        className="p-1 text-gray-400 hover:text-gray-600 transition-colors"
-                        title="Copy IV to clipboard"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                        </svg>
-                      </button>
-                    </div>
-                    <div className="text-xs text-gray-800 break-all font-mono">{result.iv_or_nonce}</div>
-                  </div>
-                )}
-              </div>
-            )}
             
             {/* Empty state when no algorithm is selected */}
             {!selectedAlgorithm && (
@@ -635,32 +865,26 @@ const CryptoLabPage = () => {
         </ResizablePanel>
 
         {/* Right Panel - Input/Output */}
-        <div className="flex-1 bg-white flex flex-col overflow-hidden">
+        <div className="flex-1 bg-white flex flex-col overflow-hidden min-h-0">
           {/* Input Section */}
           <VerticalResizablePanel
             height={inputHeight}
             minHeight={250}
             maxHeight={700}
             onResize={setInputHeight}
-            className="border-b border-gray-200 flex flex-col relative"
+            className="border-b border-gray-200 flex flex-col relative min-h-0"
           >
             <div className="p-4 border-b border-gray-200 flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-gray-900">Input</h2>
+              <div className="flex items-center space-x-3">
+                <h2 className="text-lg font-semibold text-gray-900">Input</h2>
+                <TabBar />
+              </div>
               <div className="flex items-center space-x-4">
                 <div className="flex flex-col items-end space-y-1 text-xs text-gray-500">
                   <span>length: {inputText.length}</span>
                   <span>lines: {inputText.split(/\r?\n/).length}</span>
                 </div>
                 <div className="flex items-center space-x-1">
-                <button 
-                  onClick={() => setInputText(inputText + '\n')}
-                  className="p-1 text-gray-400 hover:text-gray-600" 
-                  title="Add New Line"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                  </svg>
-                </button>
                 <button 
                   onClick={() => {
                     const input = document.createElement('input');
@@ -671,8 +895,8 @@ const CryptoLabPage = () => {
                       if (file) {
                         const reader = new FileReader();
                         reader.onload = (event) => {
-                          setInputText(event.target.result);
-                          setInputFile(file);
+                          setActiveInputText(event.target.result);
+                          setActiveInputFile(file);
                         };
                         reader.readAsText(file);
                       }
@@ -697,7 +921,7 @@ const CryptoLabPage = () => {
                       const files = Array.from(e.target.files);
                       if (files.length > 0) {
                         const fileContents = files.map(file => file.name + ':\n' + file.name).join('\n\n');
-                        setInputText(inputText + '\n' + fileContents);
+                        setActiveInputText(inputText + '\n' + fileContents);
                       }
                     };
                     input.click();
@@ -711,8 +935,8 @@ const CryptoLabPage = () => {
                 </button>
                 <button 
                   onClick={() => {
-                    setInputText('');
-                    setInputFile(null);
+                    setActiveInputText('');
+                    setActiveInputFile(null);
                   }}
                   className="p-1 text-gray-400 hover:text-gray-600" 
                   title="Clear Input"
@@ -727,7 +951,7 @@ const CryptoLabPage = () => {
             <div className="flex-1 p-4 overflow-auto">
               <textarea
                 value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
+                onChange={(e) => setActiveInputText(e.target.value)}
                 placeholder="Enter your input here..."
                 className="w-full h-full resize-none border-0 focus:outline-none text-sm font-mono"
                 disabled={isLoading}
@@ -736,9 +960,12 @@ const CryptoLabPage = () => {
           </VerticalResizablePanel>
 
           {/* Output Section */}
-          <div className="flex-1 flex flex-col relative">
+          <div className="flex-1 flex flex-col relative min-h-0">
             <div className="p-4 border-b border-gray-200 flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-gray-900">Output</h2>
+              <div className="flex items-center space-x-3">
+                <h2 className="text-lg font-semibold text-gray-900">Output</h2>
+                <TabBar />
+              </div>
               <div className="flex items-center space-x-4">
                 {result && result.output && (
                   <div className="flex flex-col items-end space-y-1 text-xs text-gray-500">
@@ -882,7 +1109,7 @@ const CryptoLabPage = () => {
                     // Undo functionality - could be enhanced with history
                     if (history.length > 0) {
                       const previousResult = history[0];
-                      setResult(previousResult);
+                      setActiveResult(previousResult);
                       setHistory(prev => prev.slice(1));
                     }
                   }}
@@ -939,7 +1166,7 @@ const CryptoLabPage = () => {
               </div>
               </div>
             </div>
-            <div className="flex-1 p-4 overflow-auto">
+            <div className="flex-1 p-4 overflow-auto min-h-0">
               {result ? (
                 <pre className="w-full h-full text-sm font-mono overflow-auto border-0 focus:outline-none">
                   {result.output}
@@ -954,6 +1181,7 @@ const CryptoLabPage = () => {
         </div>
       </div>
     </div>
+    </>
   );
 };
 

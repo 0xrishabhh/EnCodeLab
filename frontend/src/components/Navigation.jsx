@@ -55,7 +55,7 @@ const Navigation = () => {
           </div>
           
           <div className="flex items-center space-x-2 text-sm text-gray-500">
-            <span>Learn, Test, and Compare Encryption Algorithms</span>
+            <span>Learn, Test, and Compare Cryptographic Algorithms</span>
           </div>
         </div>
       </div>

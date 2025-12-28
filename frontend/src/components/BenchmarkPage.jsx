@@ -2,7 +2,6 @@ import React, { useState, useCallback } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
 import { Clock, Cpu, TrendingUp, Zap, Activity, Target, FileText, Type, Play, Settings, BarChart3, Shield, Timer, Database, CheckCircle, AlertCircle, Info, Plus, Trash2, ChevronDown, X } from 'lucide-react';
 import { cryptoAPI } from '../services/api';
-
 const BenchmarkPage = () => {
   // State for algorithm-mode selections (array of objects with algorithm and mode)
   const [algorithmSelections, setAlgorithmSelections] = useState([
@@ -17,7 +16,8 @@ const BenchmarkPage = () => {
   const [isRunning, setIsRunning] = useState(false);
   const [results, setResults] = useState(null);
   const [benchmarkHistory, setBenchmarkHistory] = useState([]);
-
+  const [scoringModel, setScoringModel] = useState('general');
+  const [powerWatts, setPowerWatts] = useState(1);
   // Available algorithms and their supported modes
   const algorithms = {
     'AES': {
@@ -79,52 +79,76 @@ const BenchmarkPage = () => {
       ivSize: '128-bit (16 bytes)',
       parallelizable: 'Yes (CTR, GCM)',
       color: '#dc2626'
+    },
+    'SALSA20': {
+      name: 'Salsa20 Stream Cipher',
+      modes: ['STREAM'],
+      description: 'Fast ARX-based stream cipher (8/12/20 rounds) that XORs a keystream with plaintext.',
+      security: 'High (20 rounds)',
+      speed: 'Extremely Fast',
+      blockSize: 'Stream (512-bit internal state)',
+      keyLengths: '128 or 256-bit',
+      ivSize: '64-bit nonce',
+      parallelizable: 'Yes',
+      color: '#be123c'
+    },
+    'CHACHA20': {
+      name: 'ChaCha20 Stream Cipher',
+      modes: ['STREAM'],
+      description: 'Modern stream cipher (RFC 8439) by D.J. Bernstein; typically paired with Poly1305.',
+      security: 'High (20 rounds)',
+      speed: 'Extremely Fast',
+      blockSize: 'Stream (512-bit internal state)',
+      keyLengths: '256-bit fixed',
+      ivSize: '96-bit nonce',
+      parallelizable: 'Yes',
+      color: '#f97316'
     }
   };
-
   // Get mode-specific recommendation for algorithm-mode combination
   const getModeRecommendation = (algorithm, mode) => {
-    const combinations = {
-      'AES': {
-        'CBC': '🟢 Secure with random IV',
-        'CFB': '🟢 Good for streaming data',
-        'OFB': '🟢 Stream cipher mode',
-        'CTR': '🟢 Parallelizable, excellent performance',
-        'GCM': '🟢 Authenticated encryption - highly recommended',
-        'ECB': '🔴 Insecure - exposes patterns'
-      },
-      '3DES': {
-        'CBC': '🟡 Acceptable for legacy systems',
-        'CFB': '🟡 Stream-like but slow',
-        'OFB': '🟡 Output feedback mode',
-        'CTR': '🟡 Better than CBC but still deprecated',
-        'ECB': '🔴 Very insecure - pattern leakage'
-      },
-      'BLOWFISH': {
-        'CBC': '🟡 Good performance, limited block size',
-        'CFB': '🟡 Stream mode with 64-bit blocks',
-        'OFB': '🟡 Feedback mode',
-        'CTR': '🟡 Counter mode, better parallelization',
-        'ECB': '🔴 Insecure - avoid pattern exposure'
-      },
-      'RC2': {
-        'CBC': '🔴 Cryptographically weak algorithm',
-        'ECB': '🔴 Extremely insecure - double vulnerability'
-      },
-      'SM4': {
-        'CBC': '🟢 Secure with random IV',
-        'CFB': '🟢 Stream-like mode',
-        'OFB': '🟢 Output feedback mode',
-        'CTR': '🟢 Parallelizable counter mode',
-        'GCM': '🟢 Authenticated encryption - recommended',
-        'ECB': '🔴 Insecure - exposes patterns'
-      }
-    };
-    
-    return combinations[algorithm]?.[mode] || '❓ Unknown combination';
+  const combinations = {
+    AES: {
+      CBC: 'Secure with random IV',
+      CFB: 'Good for streaming data',
+      OFB: 'Stream cipher mode',
+      CTR: 'Parallelizable, excellent performance',
+      GCM: 'Authenticated encryption - highly recommended',
+      ECB: 'Insecure - exposes patterns'
+    },
+    '3DES': {
+      CBC: 'Acceptable for legacy systems',
+      CFB: 'Stream-like but slow',
+      OFB: 'Output feedback mode',
+      CTR: 'Better than CBC but still deprecated',
+      ECB: 'Very insecure - pattern leakage'
+    },
+    BLOWFISH: {
+      CBC: 'Good performance, limited block size',
+      CFB: 'Stream mode with 64-bit blocks',
+      OFB: 'Feedback mode',
+      CTR: 'Counter mode, better parallelization',
+      ECB: 'Insecure - avoid pattern exposure'
+    },
+    RC2: {
+      CBC: 'Cryptographically weak algorithm',
+      ECB: 'Extremely insecure - double vulnerability'
+    },
+    SM4: {
+      CBC: 'Secure with random IV',
+      CFB: 'Stream-like mode',
+      OFB: 'Output feedback mode',
+      CTR: 'Parallelizable counter mode',
+      GCM: 'Authenticated encryption - recommended',
+      ECB: 'Insecure - exposes patterns'
+    },
+    SALSA20: {
+      STREAM: 'Use unique nonce per key; 20 rounds recommended'
+    }
   };
-
-  const dataSizeOptions = [
+  return combinations[algorithm]?.[mode] || 'Unknown combination';
+};
+const dataSizeOptions = [
     { value: 64, label: '64 bytes', category: 'Small' },
     { value: 256, label: '256 bytes', category: 'Small' },
     { value: 1024, label: '1 KB', category: 'Medium' },
@@ -134,7 +158,6 @@ const BenchmarkPage = () => {
     { value: 262144, label: '256 KB', category: 'XL' },
     { value: 1048576, label: '1 MB', category: 'XL' }
   ];
-
   const iterationOptions = [
     { value: 5, label: '5 iterations', time: 'Quick' },
     { value: 10, label: '10 iterations', time: 'Standard' },
@@ -142,7 +165,6 @@ const BenchmarkPage = () => {
     { value: 50, label: '50 iterations', time: 'Thorough' },
     { value: 100, label: '100 iterations', time: 'Comprehensive' }
   ];
-
   const generateRandomData = (size) => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()_+-=[]{}|;:,.<>?';
     let result = '';
@@ -151,7 +173,6 @@ const BenchmarkPage = () => {
     }
     return result;
   };
-
   const getTestData = () => {
     switch (testDataOption) {
       case 'random':
@@ -164,6 +185,20 @@ const BenchmarkPage = () => {
     }
   };
 
+  const formatMemory = (mb) => {
+    if (mb === null || mb === undefined || isNaN(mb)) return 'N/A';
+    const kb = mb * 1024;
+    return `${kb.toFixed(kb >= 10 ? 2 : 3)} KB`;
+  };
+
+  const formatAlgorithmName = (alg) => {
+    if (!alg) return '';
+    const map = {
+      'SALSA20': 'Salsa20',
+      'CHACHA20': 'ChaCha20'
+    };
+    return map[alg] || alg;
+  };
   // Handle file upload and read as text
   const handleFileChange = (e) => {
     const file = e.target.files[0];
@@ -178,17 +213,15 @@ const BenchmarkPage = () => {
       setUploadedFileContent('');
     }
   };
-
   const addAlgorithmSelection = () => {
     const newId = Math.max(...algorithmSelections.map(a => a.id)) + 1;
     // Find first available algorithm-mode combination
     let newAlgorithm = 'AES';
     let newMode = 'CBC';
-    
     for (const [alg, algInfo] of Object.entries(algorithms)) {
       for (const mode of algInfo.modes) {
         const combination = `${alg}-${mode}`;
-        const isUsed = algorithmSelections.some(selection => 
+        const isUsed = algorithmSelections.some(selection =>
           selection.algorithm === alg && selection.mode === mode
         );
         if (!isUsed) {
@@ -199,28 +232,24 @@ const BenchmarkPage = () => {
       }
       if (newAlgorithm !== 'AES' || newMode !== 'CBC') break;
     }
-    
     setAlgorithmSelections([...algorithmSelections, { id: newId, algorithm: newAlgorithm, mode: newMode }]);
   };
-
   const removeAlgorithmSelection = (id) => {
     if (algorithmSelections.length > 1) {
       setAlgorithmSelections(algorithmSelections.filter(a => a.id !== id));
     }
   };
-
   const updateAlgorithmSelection = (id, field, value) => {
     setAlgorithmSelections(algorithmSelections.map(selection => {
       if (selection.id === id) {
         const updated = { ...selection, [field]: value };
-        
         // Handle algorithm change
         if (field === 'algorithm') {
           // Reset mode if current mode not supported by new algorithm
           if (!algorithms[value].modes.includes(selection.mode)) {
             // Find first available mode for this algorithm
             const availableModes = algorithms[value].modes.filter(mode => {
-              const wouldBeDuplicate = algorithmSelections.some(other => 
+              const wouldBeDuplicate = algorithmSelections.some(other =>
                 other.id !== id && other.algorithm === value && other.mode === mode
               );
               return !wouldBeDuplicate;
@@ -228,12 +257,12 @@ const BenchmarkPage = () => {
             updated.mode = availableModes[0] || algorithms[value].modes[0];
           } else {
             // Check if current mode would create duplicate
-            const wouldBeDuplicate = algorithmSelections.some(other => 
+            const wouldBeDuplicate = algorithmSelections.some(other =>
               other.id !== id && other.algorithm === value && other.mode === selection.mode
             );
             if (wouldBeDuplicate) {
               const availableModes = algorithms[value].modes.filter(mode => {
-                const isDuplicate = algorithmSelections.some(other => 
+                const isDuplicate = algorithmSelections.some(other =>
                   other.id !== id && other.algorithm === value && other.mode === mode
                 );
                 return !isDuplicate;
@@ -242,10 +271,9 @@ const BenchmarkPage = () => {
             }
           }
         }
-        
         // Handle mode change - check for duplicates
         if (field === 'mode') {
-          const wouldBeDuplicate = algorithmSelections.some(other => 
+          const wouldBeDuplicate = algorithmSelections.some(other =>
             other.id !== id && other.algorithm === selection.algorithm && other.mode === value
           );
           if (wouldBeDuplicate) {
@@ -254,26 +282,21 @@ const BenchmarkPage = () => {
           }
           updated.mode = value;
         }
-        
         return updated;
       }
       return selection;
     }));
   };
-
   const getChartData = () => {
     try {
       if (!results || !Array.isArray(results)) return [];
-      
       const successfulResults = results.filter(r => !r.error);
       if (successfulResults.length === 0) return [];
-      
       return successfulResults.map(result => {
         // Safely access nested properties with fallbacks
         const encryptionTime = result.time?.encryption?.avgMs || 0;
         const decryptionTime = result.time?.decryption?.avgMs || 0;
         const totalTime = result.time?.summary?.totalAvgMs || (encryptionTime + decryptionTime);
-        
         return {
           name: (result.combinationName || 'Unknown').replace('-', '\n'),
           encryptionTime: Number(encryptionTime) || 0,
@@ -293,7 +316,6 @@ const BenchmarkPage = () => {
       return [];
     }
   };
-
   const getHistoryChartData = () => {
     return benchmarkHistory.map((entry, index) => ({
       timestamp: `Run ${index + 1}`,
@@ -301,56 +323,45 @@ const BenchmarkPage = () => {
       decryption: entry.decryption || 0
     }));
   };
-
   const runBenchmark = useCallback(async () => {
     // Prevent multiple simultaneous benchmark runs
     if (isRunning) {
       console.warn('Benchmark already running, ignoring duplicate request');
       return;
     }
-
     setIsRunning(true);
     setResults(null);
-
     try {
       console.log('Starting benchmark with selections:', algorithmSelections);
-      
       if (!algorithmSelections || algorithmSelections.length === 0) {
         throw new Error('No algorithms selected for benchmarking');
       }
-
       const testData = getTestData();
       console.log('Test data prepared:', testData?.length, 'bytes');
-      
       const benchmarkResults = [];
-      
       // Run benchmark for each selected algorithm-mode combination
       for (let i = 0; i < algorithmSelections.length; i++) {
         const selection = algorithmSelections[i];
         const combinationName = `${selection.algorithm}-${selection.mode}`;
-        
         console.log(`Running benchmark ${i + 1}/${algorithmSelections.length}: ${combinationName}`);
-        
         try {
           // Add timeout to prevent hanging requests
-          const timeoutPromise = new Promise((_, reject) => 
+          const timeoutPromise = new Promise((_, reject) =>
             setTimeout(() => reject(new Error('Request timeout after 30 seconds')), 30000)
           );
-          
           const benchmarkPromise = cryptoAPI.benchmark({
             algorithm: selection.algorithm,
             mode: selection.mode,
             testData: testData,
-            iterations: iterations
+            iterations: iterations,
+            scoringModel: scoringModel,
+            powerConsumption: powerWatts
           });
-
           const response = await Promise.race([benchmarkPromise, timeoutPromise]);
           console.log(`Benchmark response for ${combinationName}:`, response);
-          
           if (response && response.success && response.result) {
             const result = response.result;
             console.log(`Success result for ${combinationName}:`, result);
-            
             benchmarkResults.push({
               combinationId: `${selection.algorithm}-${selection.mode}`,
               combinationName: combinationName,
@@ -383,19 +394,15 @@ const BenchmarkPage = () => {
           });
         }
       }
-
       console.log('Final benchmark results:', benchmarkResults);
-      
       // Ensure we have valid results before setting
       if (benchmarkResults.length > 0) {
       setResults(benchmarkResults);
-      
         // Update history if we have successful results
       const successfulResults = benchmarkResults.filter(r => !r.error);
       if (successfulResults.length > 0) {
           const avgEncryption = successfulResults.reduce((sum, r) => sum + Number(r.time?.encryption?.avgMs || 0), 0) / successfulResults.length;
           const avgDecryption = successfulResults.reduce((sum, r) => sum + Number(r.time?.decryption?.avgMs || 0), 0) / successfulResults.length;
-          
           setBenchmarkHistory(prev => [...prev, {
             timestamp: new Date().toLocaleTimeString(),
             encryption: avgEncryption,
@@ -405,7 +412,6 @@ const BenchmarkPage = () => {
       } else {
         throw new Error('No benchmark results generated');
       }
-      
     } catch (error) {
       console.error('Benchmark error:', error);
       setResults([{
@@ -420,7 +426,6 @@ const BenchmarkPage = () => {
       setIsRunning(false);
     }
   }, [algorithmSelections, iterations, testDataOption, customTestData, randomDataSize, algorithms]);
-
   const formatBytes = (bytes) => {
     if (bytes === 0) return '0 B';
     const k = 1024;
@@ -428,19 +433,19 @@ const BenchmarkPage = () => {
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
   };
-
   const getSecurityBadgeColor = (security) => {
     switch (security) {
       case 'High': return 'bg-green-100 text-green-800 border-green-200';
+      case 'High (20 rounds)': return 'bg-green-100 text-green-800 border-green-200';
       case 'Medium': return 'bg-yellow-100 text-yellow-800 border-yellow-200';
       case 'Low': return 'bg-red-100 text-red-800 border-red-200';
       default: return 'bg-gray-100 text-gray-800 border-gray-200';
     }
   };
-
   const getSpeedBadgeColor = (speed) => {
     switch (speed) {
       case 'Very Fast': return 'bg-emerald-100 text-emerald-800 border-emerald-200';
+      case 'Extremely Fast': return 'bg-emerald-100 text-emerald-800 border-emerald-200';
       case 'Fast': return 'bg-blue-100 text-blue-800 border-blue-200';
       case 'Medium': return 'bg-yellow-100 text-yellow-800 border-yellow-200';
       case 'Slow': return 'bg-orange-100 text-orange-800 border-orange-200';
@@ -448,7 +453,6 @@ const BenchmarkPage = () => {
       default: return 'bg-gray-100 text-gray-800 border-gray-200';
     }
   };
-
   const getRecommendationColor = (recommendation) => {
     if (recommendation.includes('🟢')) return 'text-green-600';
     if (recommendation.includes('🔴')) return 'text-red-600';
@@ -456,23 +460,20 @@ const BenchmarkPage = () => {
     if (recommendation.includes('❓')) return 'text-gray-600';
     return 'text-gray-600';
   };
-
   // Check if algorithm-mode combination is already selected
   const isCombinationUsed = (algorithm, mode, excludeId = null) => {
-    return algorithmSelections.some(selection => 
-      selection.id !== excludeId && 
-      selection.algorithm === algorithm && 
+    return algorithmSelections.some(selection =>
+      selection.id !== excludeId &&
+      selection.algorithm === algorithm &&
       selection.mode === mode
     );
   };
-
   // Get available modes for an algorithm (excluding already used combinations)
   const getAvailableModes = (algorithm, currentId) => {
-    return algorithms[algorithm]?.modes.filter(mode => 
+    return algorithms[algorithm]?.modes.filter(mode =>
       !isCombinationUsed(algorithm, mode, currentId)
     ) || [];
   };
-
   // Check if we can add more algorithm selections (maximum 5)
   const canAddMoreSelections = () => {
     const totalPossibleCombinations = Object.entries(algorithms).reduce((total, [alg, algInfo]) => {
@@ -480,9 +481,8 @@ const BenchmarkPage = () => {
     }, 0);
     return algorithmSelections.length < Math.min(5, totalPossibleCombinations);
   };
-
-  return (
-    <div className="min-h-screen bg-white">
+return (
+    <div className="h-screen flex flex-col bg-white overflow-hidden">
       {/* Header Section */}
       <div className="bg-white border-b border-gray-200">
         <div className="w-full px-6 py-6 border-b border-gray-100">
@@ -509,8 +509,7 @@ const BenchmarkPage = () => {
               </div>
             </div>
           </div>
-
-      <main className="w-full">
+      <main className="w-full flex-1 overflow-auto">
         {/* Results Section - Show at top when available */}
         {results && Array.isArray(results) && results.length > 0 && !isRunning && (
           <div className="bg-white border-b border-gray-200">
@@ -537,7 +536,6 @@ const BenchmarkPage = () => {
                 </button>
               </div>
           </div>
-
             {/* Debug Info */}
             <div className="px-6 py-2 border-b border-gray-200 bg-gray-100">
               <details className="text-xs text-gray-600">
@@ -548,8 +546,8 @@ const BenchmarkPage = () => {
                     <div><strong>Chart Data Count:</strong> {getChartData().length}</div>
                     <div><strong>Successful Results:</strong> {results.filter(r => !r.error).length}</div>
                     <div><strong>Failed Results:</strong> {results.filter(r => r.error).length}</div>
-                    <div><strong>Average Efficiency:</strong> {results.filter(r => !r.error).length > 0 ? 
-                      (results.filter(r => !r.error).reduce((sum, r) => sum + (r.memory?.summary?.efficiencyScore || 0), 0) / results.filter(r => !r.error).length).toFixed(1) 
+                    <div><strong>Average Efficiency:</strong> {results.filter(r => !r.error).length > 0 ?
+                      (results.filter(r => !r.error).reduce((sum, r) => sum + (r.memory?.summary?.efficiencyScore || 0), 0) / results.filter(r => !r.error).length).toFixed(1)
                       : 'N/A'}/100</div>
                     {results.length > 0 && (
                       <details>
@@ -571,7 +569,6 @@ const BenchmarkPage = () => {
                 </div>
               </details>
         </div>
-
             {/* Performance Summary Cards */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 border-b border-gray-200">
               {/* Fastest Algorithm */}
@@ -587,7 +584,7 @@ const BenchmarkPage = () => {
                 </div>
                 <div className="text-xl font-bold text-green-900">
                   {(() => {
-                    const fastest = results.filter(r => !r.error).sort((a, b) => 
+                    const fastest = results.filter(r => !r.error).sort((a, b) =>
                       (a.time?.summary?.totalAvgMs || 0) - (b.time?.summary?.totalAvgMs || 0)
                     )[0];
                     return fastest ? fastest.combinationName : 'N/A';
@@ -595,14 +592,13 @@ const BenchmarkPage = () => {
                 </div>
                 <div className="text-sm text-green-700 mt-1">
                   {(() => {
-                    const fastest = results.filter(r => !r.error).sort((a, b) => 
+                    const fastest = results.filter(r => !r.error).sort((a, b) =>
                       (a.time?.summary?.totalAvgMs || 0) - (b.time?.summary?.totalAvgMs || 0)
                     )[0];
                     return fastest ? `${(fastest.time?.summary?.totalAvgMs || 0).toFixed(2)}ms` : 'N/A';
                   })()}
                 </div>
               </div>
-              
               {/* Highest Throughput */}
               <div className="bg-blue-50 p-6 border-r border-gray-200">
                 <div className="flex items-center space-x-3 mb-3">
@@ -616,7 +612,7 @@ const BenchmarkPage = () => {
                 </div>
                 <div className="text-xl font-bold text-blue-900">
                   {(() => {
-                    const highest = results.filter(r => !r.error).sort((a, b) => 
+                    const highest = results.filter(r => !r.error).sort((a, b) =>
                       (b.throughput?.summary?.avgMBps || 0) - (a.throughput?.summary?.avgMBps || 0)
                     )[0];
                     return highest ? highest.combinationName : 'N/A';
@@ -624,14 +620,13 @@ const BenchmarkPage = () => {
                 </div>
                 <div className="text-sm text-blue-700 mt-1">
                   {(() => {
-                    const highest = results.filter(r => !r.error).sort((a, b) => 
+                    const highest = results.filter(r => !r.error).sort((a, b) =>
                       (b.throughput?.summary?.avgMBps || 0) - (a.throughput?.summary?.avgMBps || 0)
                     )[0];
                     return highest ? `${(highest.throughput?.summary?.avgMBps || 0).toFixed(2)} MB/s` : 'N/A';
                   })()}
                 </div>
               </div>
-              
               {/* Most Memory Efficient */}
               <div className="bg-purple-50 p-6 border-r border-gray-200">
                 <div className="flex items-center space-x-3 mb-3">
@@ -645,7 +640,7 @@ const BenchmarkPage = () => {
                 </div>
                 <div className="text-xl font-bold text-purple-900">
                   {(() => {
-                    const bestMemory = results.filter(r => !r.error).sort((a, b) => 
+                    const bestMemory = results.filter(r => !r.error).sort((a, b) =>
                       (a.memory?.summary?.totalAvgMB || Infinity) - (b.memory?.summary?.totalAvgMB || Infinity)
                     )[0];
                     return bestMemory ? bestMemory.combinationName : 'N/A';
@@ -653,14 +648,13 @@ const BenchmarkPage = () => {
                 </div>
                 <div className="text-sm text-purple-700 mt-1">
                   {(() => {
-                    const bestMemory = results.filter(r => !r.error).sort((a, b) => 
+                    const bestMemory = results.filter(r => !r.error).sort((a, b) =>
                       (a.memory?.summary?.totalAvgMB || Infinity) - (b.memory?.summary?.totalAvgMB || Infinity)
                     )[0];
-                    return bestMemory ? `${(bestMemory.memory?.summary?.totalAvgMB || 0).toFixed(3)} MB` : 'N/A';
+                    return bestMemory ? formatMemory(bestMemory.memory?.summary?.totalAvgMB || 0) : 'N/A';
                   })()}
                 </div>
               </div>
-
               {/* Highest Efficiency Score */}
               <div className="bg-amber-50 p-6">
                 <div className="flex items-center space-x-3 mb-3">
@@ -674,7 +668,7 @@ const BenchmarkPage = () => {
                 </div>
                 <div className="text-xl font-bold text-amber-900">
                   {(() => {
-                    const bestEfficiency = results.filter(r => !r.error).sort((a, b) => 
+                    const bestEfficiency = results.filter(r => !r.error).sort((a, b) =>
                       (b.memory?.summary?.efficiencyScore || 0) - (a.memory?.summary?.efficiencyScore || 0)
                     )[0];
                     return bestEfficiency ? `${bestEfficiency.combinationName}` : 'N/A';
@@ -682,7 +676,7 @@ const BenchmarkPage = () => {
                 </div>
                 <div className="text-sm text-amber-700 mt-1">
                   {(() => {
-                    const bestEfficiency = results.filter(r => !r.error).sort((a, b) => 
+                    const bestEfficiency = results.filter(r => !r.error).sort((a, b) =>
                       (b.memory?.summary?.efficiencyScore || 0) - (a.memory?.summary?.efficiencyScore || 0)
                     )[0];
                     return bestEfficiency ? `${(bestEfficiency.memory?.summary?.efficiencyScore || 0).toFixed(1)}/100` : 'N/A';
@@ -690,7 +684,6 @@ const BenchmarkPage = () => {
                 </div>
                 </div>
               </div>
-              
             {/* Charts */}
             <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4 border-b border-gray-200">
               {/* Time Performance Chart */}
@@ -704,22 +697,22 @@ const BenchmarkPage = () => {
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={getChartData()} margin={{ top: 20, right: 30, left: 20, bottom: 40 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                          <XAxis 
-                            dataKey="name" 
-                            tick={{ fontSize: 12 }} 
+                          <XAxis
+                            dataKey="name"
+                            tick={{ fontSize: 12 }}
                             interval={0}
                             textAnchor="middle"
                             height={50}
                           />
                           <YAxis tick={{ fontSize: 12 }} />
-                          <Tooltip 
-                            contentStyle={{ 
-                              backgroundColor: '#f8fafc', 
+                          <Tooltip
+                            contentStyle={{
+                              backgroundColor: '#f8fafc',
                               border: '1px solid #e2e8f0',
                               borderRadius: '8px'
                             }}
                             formatter={(value, name) => [
-                              `${Number(value).toFixed(2)}ms`, 
+                              `${Number(value).toFixed(2)}ms`,
                               name === 'encryptionTime' ? 'Encryption' : name === 'decryptionTime' ? 'Decryption' : name
                             ]}
                           />
@@ -737,7 +730,6 @@ const BenchmarkPage = () => {
                     )}
               </div>
             </div>
-
               {/* Throughput Chart */}
               <div className="p-6 border-r border-gray-200">
                 <div className="flex items-center space-x-2 mb-4">
@@ -749,18 +741,17 @@ const BenchmarkPage = () => {
                     <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={getChartData()} margin={{ top: 20, right: 30, left: 20, bottom: 40 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                        <XAxis 
-                          dataKey="name" 
-                            tick={{ fontSize: 12 }} 
+                        <XAxis
+                          dataKey="name"
+                            tick={{ fontSize: 12 }}
                           interval={0}
-                            
                             textAnchor="middle"
                             height={50}
                           />
                           <YAxis tick={{ fontSize: 12 }} />
-                          <Tooltip 
-                            contentStyle={{ 
-                              backgroundColor: '#f8fafc', 
+                          <Tooltip
+                            contentStyle={{
+                              backgroundColor: '#f8fafc',
                               border: '1px solid #e2e8f0',
                               borderRadius: '8px'
                             }}
@@ -779,7 +770,6 @@ const BenchmarkPage = () => {
                     )}
                   </div>
                 </div>
-
               {/* Memory Usage Chart */}
               <div className="p-6 border-r border-gray-200">
                 <div className="flex items-center space-x-2 mb-4">
@@ -791,23 +781,22 @@ const BenchmarkPage = () => {
                     <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={getChartData()} margin={{ top: 20, right: 30, left: 20, bottom: 40 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                        <XAxis 
-                          dataKey="name" 
-                            tick={{ fontSize: 12 }} 
+                        <XAxis
+                          dataKey="name"
+                            tick={{ fontSize: 12 }}
                           interval={0}
-                            
                             textAnchor="middle"
                             height={50}
                           />
                           <YAxis tick={{ fontSize: 12 }} />
-                          <Tooltip 
-                            contentStyle={{ 
-                              backgroundColor: '#f8fafc', 
+                          <Tooltip
+                            contentStyle={{
+                              backgroundColor: '#f8fafc',
                               border: '1px solid #e2e8f0',
                               borderRadius: '8px'
                             }}
                             formatter={(value, name) => [
-                              `${Number(value).toFixed(4)} MB`, 
+                              formatMemory(Number(value)),
                               name === 'encryptionMemory' ? 'Encryption' : name === 'decryptionMemory' ? 'Decryption' : name
                             ]}
                           />
@@ -825,7 +814,6 @@ const BenchmarkPage = () => {
                     )}
                   </div>
                 </div>
-
               {/* Efficiency Score Chart */}
               <div className="p-6">
                 <div className="flex items-center space-x-2 mb-4">
@@ -841,20 +829,20 @@ const BenchmarkPage = () => {
                           color: result.color
                         }))} margin={{ top: 20, right: 30, left: 20, bottom: 40 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                        <XAxis 
-                          dataKey="name" 
-                            tick={{ fontSize: 12 }} 
+                        <XAxis
+                          dataKey="name"
+                            tick={{ fontSize: 12 }}
                           interval={0}
                             textAnchor="middle"
                             height={50}
                         />
-                        <YAxis 
-                            tick={{ fontSize: 12 }} 
+                        <YAxis
+                            tick={{ fontSize: 12 }}
                             domain={[0, 100]}
                           />
-                          <Tooltip 
-                            contentStyle={{ 
-                              backgroundColor: '#f8fafc', 
+                          <Tooltip
+                            contentStyle={{
+                              backgroundColor: '#f8fafc',
                               border: '1px solid #e2e8f0',
                               borderRadius: '8px'
                             }}
@@ -874,7 +862,6 @@ const BenchmarkPage = () => {
                   </div>
               </div>
             </div>
-
             {/* Results Table */}
             <div className="overflow-x-auto border-b border-gray-200">
               <table className="w-full">
@@ -895,11 +882,11 @@ const BenchmarkPage = () => {
                     <tr key={result.combinationId || index} className="hover:bg-gray-50">
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center space-x-3">
-                          <div 
+                          <div
                             className="w-3 h-3 rounded-full border-2 border-white shadow-sm"
                             style={{ backgroundColor: result.color }}
                           ></div>
-                          <span className="text-sm font-medium text-gray-900">{result.algorithm}</span>
+                          <span className="text-sm font-medium text-gray-900">{formatAlgorithmName(result.algorithm)}</span>
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
@@ -917,7 +904,7 @@ const BenchmarkPage = () => {
                         {result.error ? '—' : `${(result.throughput?.summary?.avgMBps || 0).toFixed(2)} MB/s`}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {result.error ? '—' : `${(result.memory?.summary?.totalAvgMB || 0).toFixed(3)} MB`}
+                        {result.error ? '—' : formatMemory(result.memory?.summary?.totalAvgMB || 0)}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         {result.error ? (
@@ -960,7 +947,6 @@ const BenchmarkPage = () => {
               </div>
             </div>
         )}
-
         {/* Configuration Panel */}
         <div className="grid grid-cols-1 lg:grid-cols-4">
           {/* Algorithm Selection with Dropdowns */}
@@ -972,8 +958,8 @@ const BenchmarkPage = () => {
                     <Shield className={`w-5 h-5 ${results && results.length > 0 ? 'text-yellow-600' : 'text-blue-600'}`} />
                     <h2 className="text-lg font-semibold text-gray-900">Algorithm Selection</h2>
                     <span className={`px-2 py-1 text-xs font-medium rounded-full ${
-                      results && results.length > 0 
-                        ? 'bg-yellow-100 text-yellow-800' 
+                      results && results.length > 0
+                        ? 'bg-yellow-100 text-yellow-800'
                         : 'bg-blue-100 text-blue-800'
                     }`}>
                       {algorithmSelections.length} of {Math.min(5, Object.entries(algorithms).reduce((total, [alg, algInfo]) => total + algInfo.modes.length, 0))} algorithms
@@ -983,22 +969,36 @@ const BenchmarkPage = () => {
                         Configure for next test
                       </span>
                     )}
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      onClick={addAlgorithmSelection}
+                      disabled={!canAddMoreSelections()}
+                      className={`flex items-center space-x-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors ${
+                        canAddMoreSelections()
+                          ? 'text-blue-600 bg-blue-50 hover:bg-blue-100'
+                          : 'text-gray-400 bg-gray-50 cursor-not-allowed'
+                      }`}
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>Add Algorithm</span>
+                    </button>
+                    <button
+                      onClick={runBenchmark}
+                      disabled={isRunning || algorithmSelections.length === 0}
+                      className={`flex items-center space-x-2 px-4 py-2 text-sm font-semibold rounded-lg shadow-sm transition-colors ${
+                        isRunning || algorithmSelections.length === 0
+                          ? 'bg-gray-400 text-white cursor-not-allowed'
+                          : 'bg-blue-600 text-white hover:bg-blue-700'
+                      }`}
+                    >
+                      <Play className="w-4 h-4" />
+                      <span>Run Benchmark</span>
+                    </button>
+                  </div>
                 </div>
-                  <button
-                    onClick={addAlgorithmSelection}
-                    disabled={!canAddMoreSelections()}
-                    className={`flex items-center space-x-2 px-3 py-2 text-sm font-medium rounded-lg transition-colors ${
-                      canAddMoreSelections()
-                        ? 'text-blue-600 bg-blue-50 hover:bg-blue-100'
-                        : 'text-gray-400 bg-gray-50 cursor-not-allowed'
-                    }`}
-                  >
-                    <Plus className="w-4 h-4" />
-                    <span>Add Algorithm</span>
-                  </button>
-              </div>
                 <p className={`text-sm mt-1 ${results && results.length > 0 ? 'text-yellow-700' : 'text-gray-600'}`}>
-                  {results && results.length > 0 
+                  {results && results.length > 0
                     ? 'Modify algorithm selection for your next benchmark test'
                     : 'Choose algorithms and modes to benchmark (no duplicate combinations allowed)'
                   }
@@ -1010,7 +1010,6 @@ const BenchmarkPage = () => {
           </div>
         )}
               </div>
-              
               <div className="p-6">
                 {algorithmSelections.map((selection, index) => (
                   <div key={selection.id} className="flex items-center space-x-4 p-4 border-b border-gray-100 last:border-b-0">
@@ -1018,7 +1017,6 @@ const BenchmarkPage = () => {
                     <div className="flex-shrink-0 w-8 h-8 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-sm font-semibold">
                       {index + 1}
                     </div>
-
                     {/* Algorithm Dropdown */}
                     <div className="flex-1">
                       <label className="block text-xs font-medium text-gray-700 mb-1">Algorithm</label>
@@ -1029,7 +1027,7 @@ const BenchmarkPage = () => {
                           className="w-full appearance-none bg-white border border-gray-300 px-3 py-2 pr-8 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                         >
                           {Object.entries(algorithms).map(([key, algo]) => {
-                            const hasAvailableModes = algo.modes.some(mode => 
+                            const hasAvailableModes = algo.modes.some(mode =>
                               !isCombinationUsed(key, mode, selection.id)
                             );
                             return (
@@ -1042,7 +1040,6 @@ const BenchmarkPage = () => {
                         <ChevronDown className="absolute right-2 top-2.5 h-4 w-4 text-gray-400 pointer-events-none" />
                       </div>
               </div>
-
                     {/* Mode Dropdown */}
                     <div className="flex-1">
                       <label className="block text-xs font-medium text-gray-700 mb-1">Mode</label>
@@ -1064,7 +1061,6 @@ const BenchmarkPage = () => {
                         <ChevronDown className="absolute right-2 top-2.5 h-4 w-4 text-gray-400 pointer-events-none" />
                       </div>
                     </div>
-
                     {/* Algorithm Info */}
                     <div className="flex-1">
                       <div className="text-xs text-gray-600 mb-2">{algorithms[selection.algorithm]?.description}</div>
@@ -1085,16 +1081,14 @@ const BenchmarkPage = () => {
                         </div>
                       </div>
           </div>
-
                     {/* Color Indicator */}
                     <div className="flex-shrink-0 flex flex-col items-center space-y-1">
-                      <div 
+                      <div
                         className="w-4 h-4 rounded-full border-2 border-white shadow-sm"
                         style={{ backgroundColor: algorithms[selection.algorithm]?.color }}
                       ></div>
                       <CheckCircle className="w-3 h-3 text-green-500" />
                     </div>
-
                     {/* Remove Button */}
                     <button
                       onClick={() => removeAlgorithmSelection(selection.id)}
@@ -1112,7 +1106,6 @@ const BenchmarkPage = () => {
               </div>
             </div>
           </div>
-
           {/* Test Configuration */}
           <div>
           {/* Test Data Configuration */}
@@ -1123,58 +1116,58 @@ const BenchmarkPage = () => {
                   <h2 className="text-lg font-semibold text-gray-900">Test Data</h2>
                 </div>
               </div>
-              
               <div className="p-6 space-y-4">
                 {/* Data Type Selection */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-3">Data Type</label>
-                  <div className="space-y-2">
-                    <label className="flex items-center space-x-3 p-3 rounded-lg border border-gray-200 cursor-pointer hover:bg-gray-50">
-                      <input
-                        type="radio"
-                        name="testDataOption"
-                        value="custom"
-                        checked={testDataOption === 'custom'}
-                        onChange={(e) => setTestDataOption(e.target.value)}
-                        className="text-blue-600 focus:ring-blue-500"
-                      />
-                      <Type className="w-4 h-4 text-gray-500" />
-                      <span className="text-sm font-medium text-gray-900">Custom Text</span>
-                    </label>
-                    <label className="flex items-center space-x-3 p-3 rounded-lg border border-gray-200 cursor-pointer hover:bg-gray-50">
-                      <input
-                        type="radio"
-                        name="testDataOption"
-                        value="random"
-                        checked={testDataOption === 'random'}
-                        onChange={(e) => setTestDataOption(e.target.value)}
-                        className="text-blue-600 focus:ring-blue-500"
-                      />
-                      <Zap className="w-4 h-4 text-gray-500" />
-                      <span className="text-sm font-medium text-gray-900">Random Data</span>
-                    </label>
-                    <label className="flex items-center space-x-3 p-3 rounded-lg border border-gray-200 cursor-pointer hover:bg-gray-50">
-                      <input
-                        type="radio"
-                        name="testDataOption"
-                        value="file"
-                        checked={testDataOption === 'file'}
-                        onChange={(e) => setTestDataOption(e.target.value)}
-                        className="text-blue-600 focus:ring-blue-500"
-                      />
-                      <FileText className="w-4 h-4 text-gray-500" />
-                      <span className="text-sm font-medium text-gray-900">File Upload</span>
-                    </label>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setTestDataOption('custom')}
+                      className={`flex items-center justify-center space-x-2 p-3 rounded-xl border transition-all duration-200 w-full ${
+                      testDataOption === 'custom'
+                        ? 'border-indigo-400 bg-gradient-to-r from-purple-500 to-indigo-500 text-white shadow'
+                        : 'border-gray-200 bg-white hover:border-blue-400 hover:shadow-sm'
+                    }`}
+                    >
+                      <Type className={`w-4 h-4 ${testDataOption === 'custom' ? 'text-white' : 'text-gray-500'}`} />
+                      <span className={`text-sm font-medium ${testDataOption === 'custom' ? 'text-white' : 'text-gray-900'}`}>Custom Text</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setTestDataOption('random')}
+                      className={`flex items-center justify-center space-x-2 p-3 rounded-xl border transition-all duration-200 w-full ${
+                      testDataOption === 'random'
+                        ? 'border-indigo-400 bg-gradient-to-r from-purple-500 to-indigo-500 text-white shadow'
+                        : 'border-gray-200 bg-white hover:border-blue-400 hover:shadow-sm'
+                    }`}
+                    >
+                      <Zap className={`w-4 h-4 ${testDataOption === 'random' ? 'text-white' : 'text-gray-500'}`} />
+                      <span className={`text-sm font-medium ${testDataOption === 'random' ? 'text-white' : 'text-gray-900'}`}>Random Data</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setTestDataOption('file')}
+                      className={`flex items-center justify-center space-x-2 p-3 rounded-xl border transition-all duration-200 w-full ${
+                      testDataOption === 'file'
+                        ? 'border-indigo-400 bg-gradient-to-r from-purple-500 to-indigo-500 text-white shadow'
+                        : 'border-gray-200 bg-white hover:border-blue-400 hover:shadow-sm'
+                    }`}
+                    >
+                      <FileText className={`w-4 h-4 ${testDataOption === 'file' ? 'text-white' : 'text-gray-500'}`} />
+                      <span className={`text-sm font-medium ${testDataOption === 'file' ? 'text-white' : 'text-gray-900'}`}>File Upload</span>
+                    </button>
                   </div>
                 </div>
-
-
                 {/* Custom Text Input */}
                 {testDataOption === 'custom' && (
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Custom Text ({customTestData.length} characters)
-                    </label>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm font-medium text-gray-700">Custom Text</span>
+                      <span className="text-xs text-gray-500">{customTestData ? `${new Blob([customTestData]).size} bytes` : '0 bytes'}</span>
+                    </div>
                     <textarea
                       value={customTestData}
                       onChange={(e) => setCustomTestData(e.target.value)}
@@ -1184,7 +1177,6 @@ const BenchmarkPage = () => {
                     />
                   </div>
                 )}
-
                 {/* File Upload Input */}
                 {testDataOption === 'file' && (
                   <div>
@@ -1209,7 +1201,6 @@ const BenchmarkPage = () => {
                     )}
                   </div>
                 )}
-
                 {/* Random Data Size */}
                 {testDataOption === 'random' && (
               <div>
@@ -1234,26 +1225,18 @@ const BenchmarkPage = () => {
         )}
               </div>
           </div>
-
-            {/* Benchmark Settings */}
-            <div className="bg-white border-t border-gray-200">
-              <div className="px-6 py-4 border-b border-gray-200 bg-gray-50">
-                <div className="flex items-center space-x-3">
-                  <Settings className="w-5 h-5 text-purple-600" />
-                  <h2 className="text-lg font-semibold text-gray-900">Settings</h2>
-            </div>
-          </div>
-              
-              <div className="p-6 space-y-4">
+            {/* Iterations and Run */}
+            <div className="bg-white border-t border-gray-200 p-4 space-y-4 rounded-lg shadow-sm">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-3">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
                     Iterations ({iterations}x)
                   </label>
                   <div className="relative">
                     <select
                       value={iterations}
                       onChange={(e) => setIterations(parseInt(e.target.value))}
-                      className="w-full appearance-none bg-white border border-gray-300 px-3 py-2 pr-8 focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                      className="w-full appearance-none bg-white border border-gray-300 px-3 py-2 pr-8 rounded focus:ring-2 focus:ring-purple-500 focus:border-transparent"
                     >
                       {iterationOptions.map((option) => (
                         <option key={option.value} value={option.value}>
@@ -1265,37 +1248,48 @@ const BenchmarkPage = () => {
                   </div>
                 </div>
 
-                {/* Run Benchmark Button */}
-            <button
-              onClick={runBenchmark}
-                  disabled={isRunning || algorithmSelections.length === 0}
-                                      className={`
-                    w-full py-4 px-6 font-semibold text-white transition-all duration-200
-                    ${isRunning || algorithmSelections.length === 0
-                      ? 'bg-gray-400 cursor-not-allowed'
-                      : 'bg-blue-600 hover:bg-blue-700'
-                    }
-                  `}
-                >
-                  <div className="flex items-center justify-center space-x-2">
-              {isRunning ? (
-                <>
-                        <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                  <span>Running...</span>
-                </>
-              ) : (
-                <>
-                        <Play className="w-5 h-5" />
-                        <span>Run Benchmark</span>
-                </>
-              )}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Scoring model
+                  </label>
+                  <div className="relative">
+                    <select
+                      value={scoringModel}
+                      onChange={(e) => setScoringModel(e.target.value)}
+                      className="w-full appearance-none bg-white border border-gray-300 px-3 py-2 pr-8 rounded focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                    >
+                      <option value="general">General-purpose (weighted)</option>
+                      <option value="throughput">Throughput-weighted</option>
+                      <option value="energy">Energy-aware</option>
+                    </select>
+                    <ChevronDown className="absolute right-2 top-2.5 h-4 w-4 text-gray-400 pointer-events-none" />
                   </div>
-            </button>
+                  {scoringModel === 'energy' && (
+                    <div className="mt-2">
+                      <label className="block text-xs font-medium text-gray-600 mb-1">
+                        Power (Watts)
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.1"
+                        value={powerWatts}
+                        onChange={(e) => setPowerWatts(parseFloat(e.target.value) || 1)}
+                        className="w-full border border-gray-300 rounded px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                      />
+                    </div>
+                  )}
+                </div>
               </div>
+
+              <p className="text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded px-3 py-2">
+                {scoringModel === 'general' && 'General-purpose blends time, memory, and throughput with balanced weights.'}
+                {scoringModel === 'throughput' && 'Throughput-weighted favors raw MB/s relative to latency and memory.'}
+                {scoringModel === 'energy' && 'Energy-aware prioritizes performance per watt and per watt per MB.'}
+              </p>
             </div>
           </div>
         </div>
-
         {/* Loading State - Modal Overlay */}
         {isRunning && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -1325,11 +1319,8 @@ const BenchmarkPage = () => {
             </div>
           </div>
         )}
-
-
       </main>
     </div>
   );
 };
-
-export default BenchmarkPage; 
+export default BenchmarkPage;

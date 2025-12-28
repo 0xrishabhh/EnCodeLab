@@ -16,6 +16,15 @@ const AlgorithmSelector = ({ selectedAlgorithm, onAlgorithmChange }) => {
   const handleMouseLeave = () => {
     setHoveredAlgorithm(null);
   };
+  const displayNames = {
+    'AES': 'AES',
+    '3DES': '3DES',
+    'BLOWFISH': 'Blowfish',
+    'RC2': 'RC2',
+    'SM4': 'SM4',
+    'SALSA20': 'Salsa20',
+    'CHACHA20': 'ChaCha20'
+  };
   const algorithmInfo = {
     'AES': {
       name: 'Advanced Encryption Standard (AES)',
@@ -76,6 +85,30 @@ const AlgorithmSelector = ({ selectedAlgorithm, onAlgorithmChange }) => {
       keyGeneration: 'Uses cryptographically secure random number generators for 128-bit keys.',
       iv: 'The Initialization Vector should be 16 bytes (128 bits) for CBC, CFB, OFB, CTR modes. GCM uses 12-byte nonce.',
       padding: 'PKCS#7 padding for CBC/ECB modes. Stream modes (CFB, OFB, CTR, GCM) require no padding.'
+    },
+    'SALSA20': {
+      name: 'Salsa20 Stream Cipher',
+      description: 'Salsa20 is a fast stream cipher by Daniel J. Bernstein. It XORs a keystream with plaintext for encryption/decryption.',
+      keyInfo: [
+        '16 bytes (128 bits)',
+        '32 bytes (256 bits) recommended',
+        'Nonce: 8 bytes'
+      ],
+      keyGeneration: 'Use random 16- or 32-byte keys. Nonce must be unique per key.',
+      iv: 'Nonce is 8 bytes; counter initializes the keystream position.',
+      padding: 'No padding (stream cipher).'
+    },
+    'CHACHA20': {
+      name: 'ChaCha20 Stream Cipher',
+      description: 'ChaCha20 is a modern stream cipher (RFC 8439) with strong diffusion and great performance on CPUs; typically paired with Poly1305.',
+      keyInfo: [
+        '32 bytes (256 bits) only',
+        'Nonce: 12 bytes (96-bit IETF standard)',
+        'Counter: 32-bit block counter'
+      ],
+      keyGeneration: 'Use random 32-byte keys; never reuse nonce with the same key.',
+      iv: 'Nonce is 12 bytes; counter sets keystream block start.',
+      padding: 'No padding (stream cipher).'
     }
   };
 
@@ -87,24 +120,26 @@ const AlgorithmSelector = ({ selectedAlgorithm, onAlgorithmChange }) => {
           onClick={() => onAlgorithmChange(algorithm)}
           onMouseEnter={(e) => handleMouseEnter(algorithm, e)}
           onMouseLeave={handleMouseLeave}
-          className={`p-2 rounded cursor-pointer text-xs font-medium uppercase tracking-wide transition-colors ${
+          className={`p-2 rounded cursor-pointer text-xs font-medium tracking-wide transition-colors ${
             selectedAlgorithm === algorithm
               ? 'bg-primary-100 text-primary-800' 
               : 'hover:bg-gray-100 text-gray-600'
           }`}
         >
-          {algorithm}
+          {displayNames[algorithm] || algorithm}
         </div>
       ))}
       
       {/* Fixed positioned tooltip */}
       {hoveredAlgorithm && (
         <div 
-          className="fixed w-80 bg-white border border-gray-300 rounded-lg shadow-xl p-4 text-left normal-case tracking-normal z-[99999]"
+          className="fixed bg-white border border-gray-300 rounded-lg shadow-xl p-4 text-left normal-case tracking-normal z-[99999] max-w-xs"
           style={{
-            left: `${tooltipPosition.x}px`,
-            top: `${tooltipPosition.y}px`,
-            pointerEvents: 'none'
+          left: `${Math.max(10, Math.min(tooltipPosition.x, window.innerWidth - 340))}px`,
+          top: `${Math.max(10, Math.min(tooltipPosition.y - 130, window.innerHeight - 260))}px`, // center-ish around hover point
+          pointerEvents: 'none',
+          maxHeight: '70vh',
+          overflowY: 'auto'
           }}
         >
           {/* Arrow pointing left */}

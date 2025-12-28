@@ -1,8 +1,16 @@
 # EnCodeLab Crypto Backend
 
-A secure Flask backend providing AES encryption and decryption functionality with multiple modes and encoding options.
+A secure Flask backend providing symmetric encryption/decryption with multiple algorithms, including AES, 3DES, Blowfish, RC2, SM4, and the Salsa20 stream cipher.
 
 ## Features
+
+### Supported Algorithms
+- **AES** with modes CBC, CFB, OFB, CTR, GCM, ECB
+- **3DES** with modes CBC, CFB, OFB, ECB
+- **Blowfish** with modes CBC, CFB, OFB, ECB
+- **RC2** with modes CBC, ECB
+- **SM4** with modes CBC, CFB, OFB, CTR, GCM, ECB
+- **Salsa20** (stream cipher) with selectable rounds (8/12/20), nonce, and counter
 
 ### Supported AES Modes
 - **CBC** (Cipher Block Chaining)

@@ -16,7 +16,9 @@ export const cryptoAPI = {
           outputFormat: data.outputFormat || 'HEX',
           key: data.key || undefined,
           iv_or_nonce: data.iv_or_nonce,
-          keySize: data.keySize
+          keySize: data.keySize,
+          rounds: data.rounds,
+          counter: data.counter
         })
       });
 
@@ -33,7 +35,7 @@ export const cryptoAPI = {
         iv_or_nonce: result.result.iv_or_nonce,
         tag: result.result.tag,
         keyGenerated: result.result.key_generated,
-        algorithm: result.result.mode,
+        algorithm: result.result.algorithm,
         mode: result.result.mode,
         executionTime: result.result.executionTime
       };
@@ -61,7 +63,9 @@ export const cryptoAPI = {
           output_encoding: data.outputFormat || 'HEX',
           key: data.key,
           iv_or_nonce: data.iv_or_nonce,
-          tag: data.tag
+          tag: data.tag,
+          rounds: data.rounds,
+          counter: data.counter
         })
       });
 
@@ -74,7 +78,7 @@ export const cryptoAPI = {
       return {
         success: true,
         output: result.result.plaintext,
-        algorithm: result.result.mode,
+        algorithm: result.result.algorithm,
         mode: result.result.mode,
         executionTime: result.result.executionTime
       };
@@ -139,7 +143,10 @@ export const cryptoAPI = {
           algorithm: data.algorithm,
           mode: data.mode,
           testData: data.testData,
-          iterations: data.iterations || 10
+          iterations: data.iterations || 10,
+          scoringModel: data.scoringModel || 'general',
+          powerConsumption: data.powerConsumption,
+          ...(data.rounds ? { rounds: data.rounds } : {})
         })
       });
 

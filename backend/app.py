@@ -15,14 +15,11 @@ import psutil
 import gc
 import sys
 from collections import defaultdict
-
-
+import struct
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for frontend communication
@@ -65,7 +62,157 @@ class CryptoService:
     SM4_BLOCK_SIZE = 16         # SM4 block size: 128 bits (16 bytes)
     SM4_IV_SIZE = 16            # SM4 IV size for CBC/CFB/OFB: 128 bits (16 bytes)
 
-    
+    # Salsa20 configurations
+    SALSA20_KEY_SIZES = [16, 32]     # 128-bit or 256-bit keys
+    SALSA20_NONCE_SIZE = 8           # 64-bit nonce
+    SALSA20_ALLOWED_ROUNDS = [8, 12, 20]  # Supported round counts
+
+    # ChaCha20 configurations
+    CHACHA20_KEY_SIZE = 32           # 256-bit key only
+    CHACHA20_NONCE_SIZE = 12         # 96-bit nonce (IETF variant)
+    CHACHA20_ALLOWED_ROUNDS = [8, 12, 20]  # Support reduced rounds for parity with Salsa controls
+
+    @staticmethod
+    def _rotl32(value, shift):
+        return ((value << shift) & 0xffffffff) | (value >> (32 - shift))
+
+    @staticmethod
+    def salsa20_keystream(key, nonce, length, rounds=20, counter=0):
+        """Generate Salsa20 keystream bytes for given key/nonce/rounds starting at block counter."""
+        if len(key) not in CryptoService.SALSA20_KEY_SIZES:
+            raise ValueError("Salsa20 key must be 16 or 32 bytes.")
+        if len(nonce) != CryptoService.SALSA20_NONCE_SIZE:
+            raise ValueError(f"Salsa20 nonce must be {CryptoService.SALSA20_NONCE_SIZE} bytes.")
+        if rounds not in CryptoService.SALSA20_ALLOWED_ROUNDS:
+            raise ValueError(f"Salsa20 rounds must be one of {CryptoService.SALSA20_ALLOWED_ROUNDS}.")
+
+        # Expand 16-byte key to 32 bytes if needed
+        if len(key) == 16:
+            constants = b"expand 16-byte k"
+            key_block = key + key
+        else:
+            constants = b"expand 32-byte k"
+            key_block = key
+
+        def salsa20_block(block_counter):
+            # Setup state (little-endian 32-bit words)
+            state = [
+                struct.unpack("<I", constants[0:4])[0],
+                struct.unpack("<I", key_block[0:4])[0],
+                struct.unpack("<I", key_block[4:8])[0],
+                struct.unpack("<I", key_block[8:12])[0],
+                struct.unpack("<I", key_block[12:16])[0],
+                struct.unpack("<I", constants[4:8])[0],
+                struct.unpack("<I", nonce[0:4])[0],
+                struct.unpack("<I", nonce[4:8])[0],
+                block_counter & 0xffffffff,
+                (block_counter >> 32) & 0xffffffff,
+                struct.unpack("<I", constants[8:12])[0],
+                struct.unpack("<I", key_block[16:20])[0],
+                struct.unpack("<I", key_block[20:24])[0],
+                struct.unpack("<I", key_block[24:28])[0],
+                struct.unpack("<I", key_block[28:32])[0],
+                struct.unpack("<I", constants[12:16])[0],
+            ]
+
+            working = state[:]
+
+            def quarterround(y, a, b, c, d):
+                y[b] ^= CryptoService._rotl32((y[a] + y[d]) & 0xffffffff, 7)
+                y[c] ^= CryptoService._rotl32((y[b] + y[a]) & 0xffffffff, 9)
+                y[d] ^= CryptoService._rotl32((y[c] + y[b]) & 0xffffffff, 13)
+                y[a] ^= CryptoService._rotl32((y[d] + y[c]) & 0xffffffff, 18)
+
+            for _ in range(rounds // 2):
+                # Column rounds
+                quarterround(working, 0, 4, 8, 12)
+                quarterround(working, 5, 9, 13, 1)
+                quarterround(working, 10, 14, 2, 6)
+                quarterround(working, 15, 3, 7, 11)
+                # Row rounds
+                quarterround(working, 0, 1, 2, 3)
+                quarterround(working, 5, 6, 7, 4)
+                quarterround(working, 10, 11, 8, 9)
+                quarterround(working, 15, 12, 13, 14)
+
+            output = []
+            for x, y in zip(working, state):
+                output.append(struct.pack("<I", (x + y) & 0xffffffff))
+            return b"".join(output)
+
+        keystream = bytearray()
+        blocks = (length + 63) // 64
+        for i in range(blocks):
+            keystream.extend(salsa20_block(counter + i))
+        return bytes(keystream[:length])
+
+    @staticmethod
+    def chacha20_keystream(key, nonce, length, rounds=20, counter=0):
+        """Generate ChaCha keystream bytes (IETF 96-bit nonce, 32-bit counter)."""
+        if len(key) != CryptoService.CHACHA20_KEY_SIZE:
+            raise ValueError(f"ChaCha20 key must be {CryptoService.CHACHA20_KEY_SIZE} bytes (256 bits).")
+        if len(nonce) != CryptoService.CHACHA20_NONCE_SIZE:
+            raise ValueError(f"ChaCha20 nonce must be {CryptoService.CHACHA20_NONCE_SIZE} bytes (96 bits).")
+        if rounds not in CryptoService.CHACHA20_ALLOWED_ROUNDS:
+            raise ValueError(f"ChaCha20 rounds must be one of {CryptoService.CHACHA20_ALLOWED_ROUNDS}.")
+
+        def rotl32(v, n):
+            return ((v << n) & 0xffffffff) | (v >> (32 - n))
+
+        def quarter_round(state, a, b, c, d):
+            state[a] = (state[a] + state[b]) & 0xffffffff
+            state[d] ^= state[a]
+            state[d] = rotl32(state[d], 16)
+
+            state[c] = (state[c] + state[d]) & 0xffffffff
+            state[b] ^= state[c]
+            state[b] = rotl32(state[b], 12)
+
+            state[a] = (state[a] + state[b]) & 0xffffffff
+            state[d] ^= state[a]
+            state[d] = rotl32(state[d], 8)
+
+            state[c] = (state[c] + state[d]) & 0xffffffff
+            state[b] ^= state[c]
+            state[b] = rotl32(state[b], 7)
+
+        def chacha_block(block_counter):
+            constants = [0x61707865, 0x3320646e, 0x79622d32, 0x6b206574]
+            key_words = [struct.unpack("<I", key[i:i+4])[0] for i in range(0, 32, 4)]
+            nonce_words = [struct.unpack("<I", nonce[i:i+4])[0] for i in range(0, 12, 4)]
+
+            state = [
+                constants[0], constants[1], constants[2], constants[3],
+                key_words[0], key_words[1], key_words[2], key_words[3],
+                key_words[4], key_words[5], key_words[6], key_words[7],
+                block_counter & 0xffffffff,
+                nonce_words[0], nonce_words[1], nonce_words[2]
+            ]
+
+            working = state[:]
+            for _ in range(rounds // 2):
+                # Column rounds
+                quarter_round(working, 0, 4, 8, 12)
+                quarter_round(working, 1, 5, 9, 13)
+                quarter_round(working, 2, 6, 10, 14)
+                quarter_round(working, 3, 7, 11, 15)
+                # Diagonal rounds
+                quarter_round(working, 0, 5, 10, 15)
+                quarter_round(working, 1, 6, 11, 12)
+                quarter_round(working, 2, 7, 8, 13)
+                quarter_round(working, 3, 4, 9, 14)
+
+            output = []
+            for x, y in zip(working, state):
+                output.append(struct.pack("<I", (x + y) & 0xffffffff))
+            return b"".join(output)
+
+        keystream = bytearray()
+        blocks = (length + 63) // 64
+        for i in range(blocks):
+            keystream.extend(chacha_block(counter + i))
+        return bytes(keystream[:length])
+
     @staticmethod
     def validate_key(key_data, algorithm='AES', required_size=None):
         """Validate and return key bytes"""
@@ -106,6 +253,14 @@ class CryptoService:
                 # SM4 requires exactly 128-bit (16 bytes) key
                 if len(key_bytes) != CryptoService.SM4_KEY_SIZE:
                     return None
+            elif algorithm.upper() == 'SALSA20':
+                # Salsa20 supports 128-bit or 256-bit keys
+                if len(key_bytes) not in CryptoService.SALSA20_KEY_SIZES:
+                    return None
+            elif algorithm.upper() == 'CHACHA20':
+                # ChaCha20 supports only 256-bit key
+                if len(key_bytes) != CryptoService.CHACHA20_KEY_SIZE:
+                    return None
             else:
                 return None
                 
@@ -129,6 +284,11 @@ class CryptoService:
                 size = 16  # Default to 16 bytes (128 bits) for RC2 - common usage
         elif algorithm.upper() == 'SM4':
             size = 16  # SM4 requires exactly 16 bytes (128 bits)
+        elif algorithm.upper() == 'SALSA20':
+            if size is None or size not in CryptoService.SALSA20_KEY_SIZES:
+                size = 32  # Default to 256-bit Salsa20 key
+        elif algorithm.upper() == 'CHACHA20':
+            size = CryptoService.CHACHA20_KEY_SIZE
         else:
             size = 32  # Default fallback
         return secrets.token_bytes(size)
@@ -179,36 +339,93 @@ class CryptoService:
             raise ValueError(f"Failed to encode data with {encoding}: {str(e)}")
     
     @staticmethod
-    def encrypt_data(algorithm, mode, data_bytes, key, encoding, iv_or_nonce=None):
+    def encrypt_data(algorithm, mode, data_bytes, key, encoding, iv_or_nonce=None, rounds=None, counter=0):
         """Encrypt data using various algorithms and modes"""
         try:
+            algorithm_upper = algorithm.upper()
+            mode_upper = mode.upper() if mode else 'STREAM'
+
             # Validate algorithm
-            if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4']:
-                raise ValueError(f"Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, and SM4 are supported.")
+            if algorithm_upper not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4', 'SALSA20', 'CHACHA20']:
+                raise ValueError(f"Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, SM4, Salsa20, and ChaCha20 are supported.")
             
             # Validate mode
-            if mode.upper() not in ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB']:
-                raise ValueError(f"Unsupported mode: {mode}. Only CBC, CFB, OFB, CTR, GCM, and ECB modes are supported.")
+            if algorithm_upper in ['SALSA20', 'CHACHA20']:
+                if mode_upper not in ['STREAM', 'SALSA20']:
+                    raise ValueError(f"{algorithm_upper} is a stream cipher and only supports STREAM mode (got {mode}).")
+            else:
+                if mode_upper not in ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB']:
+                    raise ValueError(f"Unsupported mode: {mode}. Only CBC, CFB, OFB, CTR, GCM, and ECB modes are supported.")
             
             # Validate algorithm-mode combinations
-            if algorithm.upper() == '3DES' and mode.upper() in ['CTR', 'GCM']:
+            if algorithm_upper == '3DES' and mode_upper in ['CTR', 'GCM']:
                 raise ValueError(f"3DES does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for 3DES. (CTR mode is not supported by the OpenSSL backend)")
-            if algorithm.upper() == 'BLOWFISH' and mode.upper() in ['CTR', 'GCM']:
+            if algorithm_upper == 'BLOWFISH' and mode_upper in ['CTR', 'GCM']:
                 raise ValueError(f"Blowfish does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for Blowfish.")
-            if algorithm.upper() == 'RC2' and mode.upper() not in ['CBC', 'ECB']:
+            if algorithm_upper == 'RC2' and mode_upper not in ['CBC', 'ECB']:
                 raise ValueError(f"RC2 only supports CBC (with IV) and ECB (without IV) modes.")
 
             
             tag = None
-            if algorithm.upper() == 'AES':
+            if algorithm_upper == 'SALSA20':
+                # Salsa20 stream cipher - uses key, nonce, optional counter, and rounds
+                if len(key) not in CryptoService.SALSA20_KEY_SIZES:
+                    raise ValueError("Invalid Salsa20 key length. Must be 16 or 32 bytes.")
+                salsa_rounds = rounds if rounds is not None else 20
+                if salsa_rounds not in CryptoService.SALSA20_ALLOWED_ROUNDS:
+                    raise ValueError(f"Invalid Salsa20 rounds: {salsa_rounds}. Must be one of {CryptoService.SALSA20_ALLOWED_ROUNDS}.")
+                if not iv_or_nonce:
+                    iv_or_nonce = secrets.token_bytes(CryptoService.SALSA20_NONCE_SIZE)
+                if len(iv_or_nonce) != CryptoService.SALSA20_NONCE_SIZE:
+                    raise ValueError(f"Salsa20 nonce must be {CryptoService.SALSA20_NONCE_SIZE} bytes.")
+
+                keystream = CryptoService.salsa20_keystream(key, iv_or_nonce, len(data_bytes), salsa_rounds, counter)
+                ciphertext = bytes(a ^ b for a, b in zip(data_bytes, keystream))
+
+                result = {
+                    'ciphertext': CryptoService.encode_output(ciphertext, encoding),
+                    'key': key.hex(),
+                    'iv_or_nonce': iv_or_nonce.hex(),
+                    'algorithm': 'SALSA20',
+                    'mode': 'STREAM',
+                    'counter': counter,
+                    'rounds': salsa_rounds
+                }
+                return result
+            if algorithm_upper == 'CHACHA20':
+                if len(key) != CryptoService.CHACHA20_KEY_SIZE:
+                    raise ValueError("Invalid ChaCha20 key length. Must be 32 bytes (256 bits).")
+                chacha_rounds = rounds if rounds is not None else 20
+                if chacha_rounds not in CryptoService.CHACHA20_ALLOWED_ROUNDS:
+                    raise ValueError(f"Invalid ChaCha20 rounds: {chacha_rounds}. Must be one of {CryptoService.CHACHA20_ALLOWED_ROUNDS}.")
+                if not iv_or_nonce:
+                    iv_or_nonce = secrets.token_bytes(CryptoService.CHACHA20_NONCE_SIZE)
+                if len(iv_or_nonce) != CryptoService.CHACHA20_NONCE_SIZE:
+                    raise ValueError(f"ChaCha20 nonce must be {CryptoService.CHACHA20_NONCE_SIZE} bytes (96 bits).")
+
+                keystream = CryptoService.chacha20_keystream(key, iv_or_nonce, len(data_bytes), chacha_rounds, counter)
+                ciphertext = bytes(a ^ b for a, b in zip(data_bytes, keystream))
+
+                result = {
+                    'ciphertext': CryptoService.encode_output(ciphertext, encoding),
+                    'key': key.hex(),
+                    'iv_or_nonce': iv_or_nonce.hex(),
+                    'algorithm': 'CHACHA20',
+                    'mode': 'STREAM',
+                    'counter': counter,
+                    'rounds': chacha_rounds
+                }
+                return result
+
+            if algorithm_upper == 'AES':
                 block_size = CryptoService.AES_BLOCK_SIZE
-            elif algorithm.upper() == '3DES':
+            elif algorithm_upper == '3DES':
                 block_size = CryptoService.TRIPLE_DES_BLOCK_SIZE
-            elif algorithm.upper() == 'BLOWFISH':
+            elif algorithm_upper == 'BLOWFISH':
                 block_size = CryptoService.BLOWFISH_BLOCK_SIZE
-            elif algorithm.upper() == 'RC2':
+            elif algorithm_upper == 'RC2':
                 block_size = CryptoService.RC2_BLOCK_SIZE
-            elif algorithm.upper() == 'SM4':
+            elif algorithm_upper == 'SM4':
                 block_size = CryptoService.SM4_BLOCK_SIZE
 
             
@@ -489,35 +706,93 @@ class CryptoService:
             raise ValueError(f"Encryption failed: {str(e)}")
     
     @staticmethod
-    def decrypt_data(algorithm, mode, data_bytes, key, encoding, iv_or_nonce=None, tag=None):
+    def decrypt_data(algorithm, mode, data_bytes, key, encoding, iv_or_nonce=None, tag=None, rounds=None, counter=0):
         """Decrypt data using various algorithms and modes"""
         try:
+            algorithm_upper = algorithm.upper()
+            mode_upper = mode.upper() if mode else 'STREAM'
+
             # Validate algorithm
-            if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4']:
-                raise ValueError(f"Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, and SM4 are supported.")
+            if algorithm_upper not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4', 'SALSA20', 'CHACHA20']:
+                raise ValueError(f"Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, SM4, Salsa20, and ChaCha20 are supported.")
             
             # Validate mode
-            if mode.upper() not in ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB']:
-                raise ValueError(f"Unsupported mode: {mode}. Only CBC, CFB, OFB, CTR, GCM, and ECB modes are supported.")
+            if algorithm_upper in ['SALSA20', 'CHACHA20']:
+                if mode_upper not in ['STREAM', 'SALSA20']:
+                    raise ValueError(f"{algorithm_upper} is a stream cipher and only supports STREAM mode (got {mode}).")
+            else:
+                if mode_upper not in ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB']:
+                    raise ValueError(f"Unsupported mode: {mode}. Only CBC, CFB, OFB, CTR, GCM, and ECB modes are supported.")
             
             # Validate algorithm-mode combinations
-            if algorithm.upper() == '3DES' and mode.upper() in ['CTR', 'GCM']:
+            if algorithm_upper == '3DES' and mode_upper in ['CTR', 'GCM']:
                 raise ValueError(f"3DES does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for 3DES. (CTR mode is not supported by the OpenSSL backend)")
-            if algorithm.upper() == 'BLOWFISH' and mode.upper() in ['CTR', 'GCM']:
+            if algorithm_upper == 'BLOWFISH' and mode_upper in ['CTR', 'GCM']:
                 raise ValueError(f"Blowfish does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for Blowfish.")
-            if algorithm.upper() == 'RC2' and mode.upper() not in ['CBC', 'ECB']:
+            if algorithm_upper == 'RC2' and mode_upper not in ['CBC', 'ECB']:
                 raise ValueError(f"RC2 only supports CBC (with IV) and ECB (without IV) modes.")
 
-            
-            if algorithm.upper() == 'AES':
+            if algorithm_upper == 'SALSA20':
+                if len(key) not in CryptoService.SALSA20_KEY_SIZES:
+                    raise ValueError("Invalid Salsa20 key length. Must be 16 or 32 bytes.")
+                salsa_rounds = rounds if rounds is not None else 20
+                if salsa_rounds not in CryptoService.SALSA20_ALLOWED_ROUNDS:
+                    raise ValueError(f"Invalid Salsa20 rounds: {salsa_rounds}. Must be one of {CryptoService.SALSA20_ALLOWED_ROUNDS}.")
+                if not iv_or_nonce:
+                    raise ValueError("Nonce is required for Salsa20 decryption.")
+                if len(iv_or_nonce) != CryptoService.SALSA20_NONCE_SIZE:
+                    raise ValueError(f"Salsa20 nonce must be {CryptoService.SALSA20_NONCE_SIZE} bytes.")
+
+                keystream = CryptoService.salsa20_keystream(key, iv_or_nonce, len(data_bytes), salsa_rounds, counter)
+                decrypted_data = bytes(a ^ b for a, b in zip(data_bytes, keystream))
+
+                result = {
+                    'plaintext': CryptoService.encode_output(decrypted_data, encoding),
+                    'key': key.hex(),
+                    'algorithm': 'SALSA20',
+                    'mode': 'STREAM',
+                    'counter': counter,
+                    'rounds': salsa_rounds
+                }
+                
+                if iv_or_nonce:
+                    result['iv_or_nonce'] = iv_or_nonce.hex()
+                return result
+            if algorithm_upper == 'CHACHA20':
+                if len(key) != CryptoService.CHACHA20_KEY_SIZE:
+                    raise ValueError("Invalid ChaCha20 key length. Must be 32 bytes (256 bits).")
+                chacha_rounds = rounds if rounds is not None else 20
+                if chacha_rounds not in CryptoService.CHACHA20_ALLOWED_ROUNDS:
+                    raise ValueError(f"Invalid ChaCha20 rounds: {chacha_rounds}. Must be one of {CryptoService.CHACHA20_ALLOWED_ROUNDS}.")
+                if not iv_or_nonce:
+                    raise ValueError("Nonce is required for ChaCha20 decryption.")
+                if len(iv_or_nonce) != CryptoService.CHACHA20_NONCE_SIZE:
+                    raise ValueError(f"ChaCha20 nonce must be {CryptoService.CHACHA20_NONCE_SIZE} bytes (96 bits).")
+
+                keystream = CryptoService.chacha20_keystream(key, iv_or_nonce, len(data_bytes), chacha_rounds, counter)
+                decrypted_data = bytes(a ^ b for a, b in zip(data_bytes, keystream))
+
+                result = {
+                    'plaintext': CryptoService.encode_output(decrypted_data, encoding),
+                    'key': key.hex(),
+                    'algorithm': 'CHACHA20',
+                    'mode': 'STREAM',
+                    'counter': counter,
+                    'rounds': chacha_rounds
+                }
+                if iv_or_nonce:
+                    result['iv_or_nonce'] = iv_or_nonce.hex()
+                return result
+
+            if algorithm_upper == 'AES':
                 block_size = CryptoService.AES_BLOCK_SIZE
-            elif algorithm.upper() == '3DES':
+            elif algorithm_upper == '3DES':
                 block_size = CryptoService.TRIPLE_DES_BLOCK_SIZE
-            elif algorithm.upper() == 'BLOWFISH':
+            elif algorithm_upper == 'BLOWFISH':
                 block_size = CryptoService.BLOWFISH_BLOCK_SIZE
-            elif algorithm.upper() == 'RC2':
+            elif algorithm_upper == 'RC2':
                 block_size = CryptoService.RC2_BLOCK_SIZE
-            elif algorithm.upper() == 'SM4':
+            elif algorithm_upper == 'SM4':
                 block_size = CryptoService.SM4_BLOCK_SIZE
 
             
@@ -797,8 +1072,8 @@ def home():
     return jsonify({
         'status': 'success',
         'message': 'EnCodeLab Crypto Backend is running',
-        'supported_algorithms': ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4'],
-        'supported_modes': ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB'],
+        'supported_algorithms': ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4', 'SALSA20', 'CHACHA20'],
+        'supported_modes': ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB', 'STREAM'],
         'supported_encodings': ['HEX', 'RAW']
     })
 
@@ -824,14 +1099,42 @@ def encrypt():
         output_encoding = data.get('outputFormat', 'HEX')  # Default to HEX for output
         provided_key = data.get('key')
         provided_iv = data.get('iv_or_nonce') or data.get('iv')
+        salsa_rounds = data.get('rounds')
+        salsa_counter = data.get('counter', 0)
+        chacha_rounds = data.get('rounds')
+        chacha_counter = data.get('counter', 0)
+        chacha_rounds = data.get('rounds')
+        chacha_counter = data.get('counter', 0)
         
         # Validate algorithm
-        if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4']:
-            return jsonify({'error': f'Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, and SM4 are supported.'}), 400
+        if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4', 'SALSA20', 'CHACHA20']:
+            return jsonify({'error': f'Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, SM4, Salsa20, and ChaCha20 are supported.'}), 400
         
         # Validate mode
-        if mode.upper() not in ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB']:
-            return jsonify({'error': f'Unsupported mode: {mode}. Only CBC, CFB, OFB, CTR, GCM, and ECB modes are supported.'}), 400
+        if algorithm.upper() in ['SALSA20', 'CHACHA20']:
+            if mode.upper() not in ['STREAM', 'SALSA20']:
+                return jsonify({'error': f'{algorithm.upper()} is a stream cipher and only supports STREAM mode (got {mode}).'}), 400
+            # Validate rounds if provided
+            if algorithm.upper() == 'SALSA20':
+                if salsa_rounds is None:
+                    salsa_rounds = 20
+                if salsa_rounds not in CryptoService.SALSA20_ALLOWED_ROUNDS:
+                    return jsonify({'error': f'Invalid Salsa20 rounds: {salsa_rounds}. Must be one of {CryptoService.SALSA20_ALLOWED_ROUNDS}.'}), 400
+            else:
+                if chacha_rounds is None:
+                    chacha_rounds = 20
+                if chacha_rounds not in CryptoService.CHACHA20_ALLOWED_ROUNDS:
+                    return jsonify({'error': f'Invalid ChaCha20 rounds: {chacha_rounds}. Must be one of {CryptoService.CHACHA20_ALLOWED_ROUNDS}.'}), 400
+            # Validate counter
+            if algorithm.upper() == 'SALSA20':
+                if not isinstance(salsa_counter, int) or salsa_counter < 0:
+                    return jsonify({'error': 'Salsa20 counter must be a non-negative integer.'}), 400
+            else:
+                if not isinstance(chacha_counter, int) or chacha_counter < 0:
+                    return jsonify({'error': 'ChaCha20 counter must be a non-negative integer.'}), 400
+        else:
+            if mode.upper() not in ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB']:
+                return jsonify({'error': f'Unsupported mode: {mode}. Only CBC, CFB, OFB, CTR, GCM, and ECB modes are supported.'}), 400
         
         # Validate algorithm-mode combinations
         if algorithm.upper() == '3DES' and mode.upper() in ['CTR', 'GCM']:
@@ -864,6 +1167,10 @@ def encrypt():
                     return jsonify({'error': f'Invalid key provided. RC2 key must be between {CryptoService.RC2_MIN_KEY_SIZE} and {CryptoService.RC2_MAX_KEY_SIZE} bytes (8-1024 bits) long.'}), 400
                 elif algorithm.upper() == 'SM4':
                     return jsonify({'error': 'Invalid key provided. SM4 key must be exactly 16 bytes (128 bits) long.'}), 400
+                elif algorithm.upper() == 'SALSA20':
+                    return jsonify({'error': 'Invalid key provided. Salsa20 key must be 16 or 32 bytes (128/256 bits).'}), 400
+                elif algorithm.upper() == 'CHACHA20':
+                    return jsonify({'error': 'Invalid key provided. ChaCha20 key must be exactly 32 bytes (256 bits).'}), 400
                 else:
                     return jsonify({'error': 'Invalid key provided.'}), 400
         else:
@@ -884,12 +1191,19 @@ def encrypt():
                 iv_or_nonce = bytes.fromhex(provided_iv)
             except ValueError:
                 return jsonify({'error': 'Invalid IV format. Must be hexadecimal.'}), 400
+        elif algorithm.upper() == 'SALSA20':
+            iv_or_nonce = secrets.token_bytes(CryptoService.SALSA20_NONCE_SIZE)
+        elif algorithm.upper() == 'CHACHA20':
+            iv_or_nonce = secrets.token_bytes(CryptoService.CHACHA20_NONCE_SIZE)
         
         # Encrypt data
         try:
             import time
             start_time = time.perf_counter()
-            result = CryptoService.encrypt_data(algorithm, mode, data_bytes, key, output_encoding, iv_or_nonce)
+            # Use algorithm-specific rounds/counter
+            use_rounds = salsa_rounds if algorithm.upper() == 'SALSA20' else chacha_rounds
+            use_counter = salsa_counter if algorithm.upper() == 'SALSA20' else chacha_counter
+            result = CryptoService.encrypt_data(algorithm, mode, data_bytes, key, output_encoding, iv_or_nonce, use_rounds, use_counter)
             end_time = time.perf_counter()
             execution_time = round((end_time - start_time) * 1000, 2)  # Convert to milliseconds
             
@@ -929,14 +1243,34 @@ def decrypt():
         provided_key = data['key']
         iv_or_nonce_hex = data.get('iv_or_nonce')
         tag_hex = data.get('tag')
+        salsa_rounds = data.get('rounds')
+        salsa_counter = data.get('counter', 0)
         
         # Validate algorithm
-        if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4']:
-            return jsonify({'error': f'Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, and SM4 are supported.'}), 400
+        if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4', 'SALSA20', 'CHACHA20']:
+            return jsonify({'error': f'Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, SM4, Salsa20, and ChaCha20 are supported.'}), 400
         
         # Validate mode
-        if mode.upper() not in ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB']:
-            return jsonify({'error': f'Unsupported mode: {mode}. Only CBC, CFB, OFB, CTR, GCM, and ECB modes are supported.'}), 400
+        if algorithm.upper() in ['SALSA20', 'CHACHA20']:
+            if mode.upper() not in ['STREAM', 'SALSA20']:
+                return jsonify({'error': f'{algorithm.upper()} is a stream cipher and only supports STREAM mode (got {mode}).'}), 400
+            if algorithm.upper() == 'SALSA20':
+                if salsa_rounds is None:
+                    salsa_rounds = 20
+                if salsa_rounds not in CryptoService.SALSA20_ALLOWED_ROUNDS:
+                    return jsonify({'error': f'Invalid Salsa20 rounds: {salsa_rounds}. Must be one of {CryptoService.SALSA20_ALLOWED_ROUNDS}.'}), 400
+                if not isinstance(salsa_counter, int) or salsa_counter < 0:
+                    return jsonify({'error': 'Salsa20 counter must be a non-negative integer.'}), 400
+            else:
+                if chacha_rounds is None:
+                    chacha_rounds = 20
+                if chacha_rounds not in CryptoService.CHACHA20_ALLOWED_ROUNDS:
+                    return jsonify({'error': f'Invalid ChaCha20 rounds: {chacha_rounds}. Must be one of {CryptoService.CHACHA20_ALLOWED_ROUNDS}.'}), 400
+                if not isinstance(chacha_counter, int) or chacha_counter < 0:
+                    return jsonify({'error': 'ChaCha20 counter must be a non-negative integer.'}), 400
+        else:
+            if mode.upper() not in ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB']:
+                return jsonify({'error': f'Unsupported mode: {mode}. Only CBC, CFB, OFB, CTR, GCM, and ECB modes are supported.'}), 400
         
         # Validate algorithm-mode combinations
         if algorithm.upper() == '3DES' and mode.upper() in ['CTR', 'GCM']:
@@ -957,11 +1291,15 @@ def decrypt():
                 return jsonify({'error': 'Invalid key provided. 3DES key must be 16 or 24 bytes long.'}), 400
             elif algorithm.upper() == 'BLOWFISH':
                 return jsonify({'error': f'Invalid key provided. Blowfish key must be between {CryptoService.BLOWFISH_MIN_KEY_SIZE} and {CryptoService.BLOWFISH_MAX_KEY_SIZE} bytes (32-448 bits) long.'}), 400
+            elif algorithm.upper() == 'SALSA20':
+                return jsonify({'error': 'Invalid key provided. Salsa20 key must be 16 or 32 bytes (128/256 bits).'}), 400
             else:
                 return jsonify({'error': 'Invalid key provided.'}), 400
         
         # Check for required IV/nonce for modes that need it
         modes_requiring_iv = ['CBC', 'CFB', 'OFB', 'CTR', 'GCM']
+        if algorithm.upper() == 'SALSA20':
+            modes_requiring_iv = ['STREAM']
         if mode.upper() in modes_requiring_iv and not iv_or_nonce_hex:
             return jsonify({'error': f'IV/nonce is required for {mode} mode'}), 400
         
@@ -988,7 +1326,9 @@ def decrypt():
         try:
             import time
             start_time = time.perf_counter()
-            result = CryptoService.decrypt_data(algorithm, mode, data_bytes, key, output_encoding, iv_or_nonce, tag)
+            use_rounds = salsa_rounds if algorithm.upper() == 'SALSA20' else chacha_rounds
+            use_counter = salsa_counter if algorithm.upper() == 'SALSA20' else chacha_counter
+            result = CryptoService.decrypt_data(algorithm, mode, data_bytes, key, output_encoding, iv_or_nonce, tag, use_rounds, use_counter)
             end_time = time.perf_counter()
             execution_time = round((end_time - start_time) * 1000, 2)  # Convert to milliseconds
             
@@ -1022,8 +1362,8 @@ def generate():
         iv_size = data.get('iv_size')    # Let the algorithm determine size
         
         # Validate algorithm
-        if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4']:
-            return jsonify({'error': 'Invalid algorithm. Must be AES, 3DES, or Blowfish.'}), 400
+        if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4', 'SALSA20', 'CHACHA20']:
+            return jsonify({'error': 'Invalid algorithm. Must be AES, 3DES, Blowfish, RC2, SM4, Salsa20, or ChaCha20.'}), 400
         
         # Set appropriate sizes based on algorithm
         if algorithm.upper() == 'AES':
@@ -1074,6 +1414,16 @@ def generate():
             # SM4 has fixed key and IV sizes
             key_size = 16   # SM4 requires exactly 16 bytes (128 bits)
             iv_size = 16    # SM4 IV size is 16 bytes (128 bits)
+        elif algorithm.upper() == 'CHACHA20':
+            key_size = CryptoService.CHACHA20_KEY_SIZE
+            iv_size = CryptoService.CHACHA20_NONCE_SIZE
+        elif algorithm.upper() == 'SALSA20':
+            if key_size is None or key_size not in CryptoService.SALSA20_KEY_SIZES:
+                key_size = 32  # Default to 256-bit Salsa20 key
+            if iv_size is None:
+                iv_size = CryptoService.SALSA20_NONCE_SIZE
+            if iv_size != CryptoService.SALSA20_NONCE_SIZE:
+                return jsonify({'error': f'Invalid Salsa20 nonce size. Must be {CryptoService.SALSA20_NONCE_SIZE} bytes.'}), 400
 
         
         # Generate random key and IV
@@ -1114,12 +1464,53 @@ def benchmark():
         mode = data['mode']
         test_data = data['testData']
         iterations = data['iterations']
+        salsa_rounds = data.get('rounds', 20)
+        salsa_counter = data.get('counter', 0)
+        chacha_rounds = data.get('rounds', 20)
+        chacha_counter = data.get('counter', 0)
+        scoring_model = str(data.get('scoringModel', 'general')).lower()
+        power_consumption = data.get('powerConsumption', data.get('power', 1.0))
+        try:
+            power_consumption = float(power_consumption)
+            if power_consumption <= 0:
+                power_consumption = 1.0
+        except Exception:
+            power_consumption = 1.0
+
+        # Normalize scoring model label
+        scoring_aliases = {
+            'general': 'general',
+            'general-purpose': 'general',
+            'default': 'general',
+            'throughput': 'throughput',
+            'throughput-weighted': 'throughput',
+            'throughput_weighted': 'throughput',
+            'efficiency': 'throughput',
+            'energy': 'energy',
+            'energy-aware': 'energy',
+            'energy_aware': 'energy'
+        }
+        scoring_model = scoring_aliases.get(scoring_model, 'general')
         
         # Validate algorithm and mode
-        if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4']:
-            return jsonify({'error': f'Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, and SM4 are supported.'}), 400
+        if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4', 'SALSA20', 'CHACHA20']:
+            return jsonify({'error': f'Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, SM4, Salsa20, and ChaCha20 are supported.'}), 400
         
-        if mode.upper() not in ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB']:
+        if algorithm.upper() in ['SALSA20', 'CHACHA20']:
+            if mode.upper() not in ['STREAM', 'SALSA20']:
+                return jsonify({'error': f'{algorithm.upper()} is a stream cipher and only supports STREAM mode (got {mode}).'}), 400
+            if algorithm.upper() == 'SALSA20':
+                if salsa_rounds not in CryptoService.SALSA20_ALLOWED_ROUNDS:
+                    return jsonify({'error': f'Invalid Salsa20 rounds: {salsa_rounds}. Must be one of {CryptoService.SALSA20_ALLOWED_ROUNDS}.'}), 400
+                if not isinstance(salsa_counter, int) or salsa_counter < 0:
+                    return jsonify({'error': 'Salsa20 counter must be a non-negative integer.'}), 400
+            else:
+                if chacha_rounds not in CryptoService.CHACHA20_ALLOWED_ROUNDS:
+                    return jsonify({'error': f'Invalid ChaCha20 rounds: {chacha_rounds}. Must be one of {CryptoService.CHACHA20_ALLOWED_ROUNDS}.'}), 400
+                if not isinstance(chacha_counter, int) or chacha_counter < 0:
+                    return jsonify({'error': 'ChaCha20 counter must be a non-negative integer.'}), 400
+            mode = 'STREAM'
+        elif mode.upper() not in ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB']:
             return jsonify({'error': f'Unsupported mode: {mode}. Only CBC, CFB, OFB, CTR, GCM, and ECB modes are supported.'}), 400
         
         # Validate algorithm-mode combinations
@@ -1130,6 +1521,12 @@ def benchmark():
 
         
         # Generate common key and IV for all iterations
+        if salsa_rounds is None:
+            salsa_rounds = 20
+        if chacha_rounds is None:
+            chacha_rounds = 20
+        salsa_counter = salsa_counter if isinstance(salsa_counter, int) and salsa_counter >= 0 else 0
+
         if algorithm.upper() == 'AES':
             key = secrets.token_bytes(32)  # 256-bit key
             block_size = 16
@@ -1145,13 +1542,23 @@ def benchmark():
         elif algorithm.upper() == 'SM4':
             key = secrets.token_bytes(16)  # 128-bit key (fixed for SM4)
             block_size = 16
+        elif algorithm.upper() == 'CHACHA20':
+            key = secrets.token_bytes(CryptoService.CHACHA20_KEY_SIZE)  # 256-bit key
+            block_size = None  # stream
+        elif algorithm.upper() == 'SALSA20':
+            key = secrets.token_bytes(32)  # 256-bit key
+            block_size = None  # Stream cipher; not block-based
         else:
             raise ValueError(f"Unsupported algorithm for benchmarking: {algorithm}")
 
         
         # Generate IV if needed
         iv_or_nonce = None
-        if mode.upper() != 'ECB':
+        if algorithm.upper() == 'SALSA20':
+            iv_or_nonce = secrets.token_bytes(CryptoService.SALSA20_NONCE_SIZE)
+        elif algorithm.upper() == 'CHACHA20':
+            iv_or_nonce = secrets.token_bytes(CryptoService.CHACHA20_NONCE_SIZE)
+        elif mode.upper() != 'ECB':
             if mode.upper() == 'GCM':
                 iv_or_nonce = secrets.token_bytes(12)  # 96-bit nonce for GCM
             else:
@@ -1180,7 +1587,9 @@ def benchmark():
         # Warm up the system (run a few iterations without timing)
         for _ in range(min(3, iterations // 10)):
             try:
-                encrypted_result = CryptoService.encrypt_data(algorithm, mode, data_bytes, key, 'HEX', iv_or_nonce)
+                use_rounds = salsa_rounds if algorithm.upper() == 'SALSA20' else chacha_rounds
+                use_counter = salsa_counter if algorithm.upper() == 'SALSA20' else chacha_counter
+                encrypted_result = CryptoService.encrypt_data(algorithm, mode, data_bytes, key, 'HEX', iv_or_nonce, use_rounds, use_counter)
                 ciphertext_bytes = bytes.fromhex(encrypted_result['ciphertext'])
                 
                 # Handle tag conversion for GCM mode in warm-up
@@ -1191,7 +1600,7 @@ def benchmark():
                     except (ValueError, TypeError):
                         tag = None
                 
-                CryptoService.decrypt_data(algorithm, mode, ciphertext_bytes, key, 'HEX', iv_or_nonce, tag)
+                CryptoService.decrypt_data(algorithm, mode, ciphertext_bytes, key, 'HEX', iv_or_nonce, tag, use_rounds, use_counter)
             except Exception as e:
                 return jsonify({'error': f'Warm-up iteration failed: {str(e)}'}), 500
         
@@ -1211,7 +1620,9 @@ def benchmark():
             
             start_time = time.perf_counter()
             try:
-                encrypted_result = CryptoService.encrypt_data(algorithm, mode, data_bytes, key, 'HEX', iv_or_nonce)
+                use_rounds = salsa_rounds if algorithm.upper() == 'SALSA20' else chacha_rounds
+                use_counter = salsa_counter if algorithm.upper() == 'SALSA20' else chacha_counter
+                encrypted_result = CryptoService.encrypt_data(algorithm, mode, data_bytes, key, 'HEX', iv_or_nonce, use_rounds, use_counter)
                 encryption_time = (time.perf_counter() - start_time) * 1000  # Convert to milliseconds
                 encryption_times.append(encryption_time)
                 
@@ -1245,6 +1656,9 @@ def benchmark():
                 elif algorithm.upper() == 'BLOWFISH':
                     # Blowfish has key schedule overhead
                     overhead = base_memory * 0.25 + 0.002
+                elif algorithm.upper() in ['SALSA20', 'CHACHA20']:
+                    # Stream cipher with minimal overhead
+                    overhead = base_memory * 0.08 + 0.0008
                 else:
                     overhead = base_memory * 0.2 + 0.0015
                 
@@ -1264,7 +1678,7 @@ def benchmark():
                     except (ValueError, TypeError):
                         tag = None
                 
-                decrypted_result = CryptoService.decrypt_data(algorithm, mode, ciphertext_bytes, key, 'HEX', iv_or_nonce, tag)
+                decrypted_result = CryptoService.decrypt_data(algorithm, mode, ciphertext_bytes, key, 'HEX', iv_or_nonce, tag, use_rounds, use_counter)
                 decryption_time = (time.perf_counter() - start_time) * 1000  # Convert to milliseconds
                 decryption_times.append(decryption_time)
                 
@@ -1295,6 +1709,8 @@ def benchmark():
                 elif algorithm.upper() == 'BLOWFISH':
                     # Blowfish decryption (reuses key schedule)
                     dec_overhead = base_decryption_memory * 0.2 + 0.0015
+                elif algorithm.upper() in ['SALSA20', 'CHACHA20']:
+                    dec_overhead = base_decryption_memory * 0.08 + 0.0008
                 else:
                     dec_overhead = base_decryption_memory * 0.15 + 0.001
                 
@@ -1380,90 +1796,159 @@ def benchmark():
         # Calculate real performance metrics without any artificial adjustments
         # These are the actual measured values from the benchmark
         
-        # Time performance: Data processing rate (MB/ms) - higher is better
-        # Use the average throughput converted to MB/ms
-        time_performance = avg_throughput / 1000 if avg_throughput > 0 else 0  # Convert MB/s to MB/ms
+        # Latency metric: total time in ms (lower is better)
+        time_performance = total_time
         
-        # Throughput performance: MB/s - higher is better
+        # Throughput performance: MB/s (higher is better)
         throughput_performance = avg_throughput
         
-        # Memory performance: MB used - lower is better
+        # Memory performance: MB used (lower is better)
         memory_performance = total_memory
         
         # Store current algorithm's performance for ranking-based scoring
+        throughput_efficiency = throughput_performance / max(1e-9, total_time * total_memory) if total_time > 0 and total_memory > 0 else 0
+        energy_efficiency = throughput_performance / max(1e-9, power_consumption)
+        energy_mem_efficiency = throughput_performance / max(1e-9, power_consumption * total_memory) if total_memory > 0 else 0
+
         current_performance = {
             'algorithm': f"{algorithm}-{mode}",
+            'enc_time_ms': avg_encryption_time,
+            'dec_time_ms': avg_decryption_time,
             'time_performance': time_performance,
             'throughput_performance': throughput_performance,
-            'memory_performance': memory_performance
+            'memory_performance': memory_performance,
+            'total_time_ms': total_time,
+            'total_memory_mb': total_memory,
+            'power_consumption': power_consumption,
+            'throughput_efficiency': throughput_efficiency,
+            'energy_efficiency': energy_efficiency,
+            'energy_mem_efficiency': energy_mem_efficiency
         }
         
         # Add to global storage for ranking comparison
         algorithm_performances[f"{algorithm}-{mode}"].append(current_performance)
         
         # Calculate ranking-based scores
-        # Get all unique algorithms that have been tested
-        all_algorithms = list(algorithm_performances.keys())
-        
-        # If we have multiple algorithms, calculate ranking-based scores
-        if len(all_algorithms) > 1:
-            # Get all performances with their algorithm names for ranking
-            all_performances = []
-            for alg_name, perfs in algorithm_performances.items():
-                for perf in perfs:
-                    all_performances.append({
-                        'algorithm': alg_name,
-                        'time_performance': perf['time_performance'],
-                        'throughput_performance': perf['throughput_performance'],
-                        'memory_performance': perf['memory_performance']
-                    })
-            
-            # Sort algorithms by each metric to get rankings
-            time_ranking = sorted(all_performances, key=lambda x: x['time_performance'], reverse=True)
-            throughput_ranking = sorted(all_performances, key=lambda x: x['throughput_performance'], reverse=True)
-            memory_ranking = sorted(all_performances, key=lambda x: x['memory_performance'])  # Lower is better
-            
-            # Find current algorithm's rank in each category (1st place = rank 0)
-            current_alg = f"{algorithm}-{mode}"
-            time_rank = next((i for i, alg in enumerate(time_ranking) if alg['algorithm'] == current_alg), 0)
-            throughput_rank = next((i for i, alg in enumerate(throughput_ranking) if alg['algorithm'] == current_alg), 0)
-            memory_rank = next((i for i, alg in enumerate(memory_ranking) if alg['algorithm'] == current_alg), 0)
-            
-            total_algorithms = len(all_performances)
-            
-            # Calculate scores based on ranking (1st place = 100, last place = 60)
-            # Score = 100 - (rank * (40 / (total_algorithms - 1)))
-            score_range = 40  # Score range from 60 to 100
-            
-            if total_algorithms > 1:
-                time_score = 100 - (time_rank * (score_range / (total_algorithms - 1)))
-                throughput_score = 100 - (throughput_rank * (score_range / (total_algorithms - 1)))
-                memory_score = 100 - (memory_rank * (score_range / (total_algorithms - 1)))
-            else:
-                time_score = throughput_score = memory_score = 100
-            
-            # Ensure scores are within bounds
-            time_score = max(60, min(100, time_score))
-            throughput_score = max(60, min(100, throughput_score))
-            memory_score = max(60, min(100, memory_score))
-            
-        else:
-            # If only one algorithm tested, give it a high baseline score
-            time_score = throughput_score = memory_score = 85
-        
+        # Use the latest run per algorithm to avoid historical runs skewing normalization
+        latest_performances = {
+            alg_name: perfs[-1] for alg_name, perfs in algorithm_performances.items() if perfs
+        }
 
+        def soft_norm(val, min_v, max_v, higher_is_better):
+            """Min-max with epsilon smoothing; returns 0..1."""
+            if max_v == min_v:
+                return 1.0  # all equal
+            span = max_v - min_v
+            eps = 0.05 * span
+            if higher_is_better:
+                return max(0.0, min(1.0, (val - min_v + eps) / (span + eps)))
+            return max(0.0, min(1.0, (max_v - val + eps) / (span + eps)))
+
+        enc_score = dec_score = throughput_score = memory_score = 0.75
+
+        if latest_performances:
+            enc_vals = [p['enc_time_ms'] for p in latest_performances.values()]
+            dec_vals = [p['dec_time_ms'] for p in latest_performances.values()]
+            thr_vals = [p['throughput_performance'] for p in latest_performances.values()]
+            mem_vals = [p['memory_performance'] for p in latest_performances.values()]
+
+            enc_score = soft_norm(avg_encryption_time, min(enc_vals), max(enc_vals), higher_is_better=False)
+            dec_score = soft_norm(avg_decryption_time, min(dec_vals), max(dec_vals), higher_is_better=False)
+            throughput_score = soft_norm(throughput_performance, min(thr_vals), max(thr_vals), higher_is_better=True)
+            memory_score = soft_norm(memory_performance, min(mem_vals), max(mem_vals), higher_is_better=False)
+        else:
+            # Neutral fallback if we have no comparison set
+            enc_score = dec_score = throughput_score = memory_score = 0.75
+
+        score_breakdown = {}
+
+        if scoring_model == 'throughput':
+            # Throughput-weighted efficiency: throughput / (latency * memory), banded to avoid everyone being 100
+            eff_values = [p.get('throughput_efficiency', 0) for p in latest_performances.values()]
+            best_eff = max(eff_values) if eff_values else 0
+            worst_eff = min(eff_values) if eff_values else 0
+            throughput_eff_score = soft_norm(throughput_efficiency, worst_eff, best_eff, higher_is_better=True) if eff_values else 0.75
+            throughput_eff_score = 60 + throughput_eff_score * 40  # map to 60-100 band
+            efficiency_score = round(throughput_eff_score, 2)
+            score_breakdown = {
+                'model': 'throughput-weighted',
+                'throughputEfficiency': throughput_efficiency,
+                'bestThroughputEfficiency': best_eff,
+                'worstThroughputEfficiency': worst_eff,
+                'throughputEfficiencyScore': round(throughput_eff_score, 2),
+                'encScore': round(enc_score * 100, 2),
+                'decScore': round(dec_score * 100, 2),
+                'throughputScore': round(throughput_score * 100, 2),
+                'memoryScore': round(memory_score * 100, 2)
+            }
+        elif scoring_model == 'energy':
+            # Energy-aware: throughput per watt and per watt per MB
+            best_per_watt = max((p.get('energy_efficiency', 0) for p in latest_performances.values()), default=0)
+            best_per_watt_mem = max((p.get('energy_mem_efficiency', 0) for p in latest_performances.values()), default=0)
+            worst_per_watt = min((p.get('energy_efficiency', 0) for p in latest_performances.values()), default=0)
+            worst_per_watt_mem = min((p.get('energy_mem_efficiency', 0) for p in latest_performances.values()), default=0)
+
+            per_watt_norm = soft_norm(energy_efficiency, worst_per_watt, best_per_watt, higher_is_better=True) if best_per_watt or worst_per_watt else 0.75
+            per_watt_mem_norm = soft_norm(energy_mem_efficiency, worst_per_watt_mem, best_per_watt_mem, higher_is_better=True) if best_per_watt_mem or worst_per_watt_mem else 0.75
+
+            energy_score = (per_watt_norm + per_watt_mem_norm) / 2
+            efficiency_score = round(60 + energy_score * 40, 2)
+            score_breakdown = {
+                'model': 'energy-aware',
+                'throughputPerWatt': energy_efficiency,
+                'throughputPerWattPerMB': energy_mem_efficiency,
+                'bestThroughputPerWatt': best_per_watt,
+                'bestThroughputPerWattPerMB': best_per_watt_mem,
+                'worstThroughputPerWatt': worst_per_watt,
+                'worstThroughputPerWattPerMB': worst_per_watt_mem,
+                'perWattScore': round(per_watt_norm * 100, 2),
+                'perWattPerMBScore': round(per_watt_mem_norm * 100, 2)
+            }
+        else:
+            # Weighted aggregate (general-purpose)
+            weight_enc = 0.25
+            weight_dec = 0.25
+            weight_thr = 0.30
+            weight_mem = 0.20
+
+            raw_score = (
+                enc_score * weight_enc +
+                dec_score * weight_dec +
+                throughput_score * weight_thr +
+                memory_score * weight_mem
+            )
+            efficiency_score = round(60 + raw_score * 40, 2)
+            score_breakdown = {
+                'model': 'general',
+                'weights': {
+                    'enc': weight_enc,
+                    'dec': weight_dec,
+                    'throughput': weight_thr,
+                    'memory': weight_mem
+                },
+                'normalized': {
+                    'enc': round(enc_score, 4),
+                    'dec': round(dec_score, 4),
+                    'throughput': round(throughput_score, 4),
+                    'memory': round(memory_score, 4)
+                },
+                'rawScore': round(raw_score, 4),
+                'finalTransform': '60 + 40x'
+            }
         
-        # Calculate weighted efficiency score
-        efficiency_score = (
-            time_score * 0.40 +      # 40% weight for time performance
-            throughput_score * 0.35 + # 35% weight for throughput performance
-            memory_score * 0.25       # 25% weight for memory efficiency
-        )
-        
-        # Ensure score is within valid range
-        efficiency_score = max(0, min(100, efficiency_score))
-        efficiency_score = round(efficiency_score, 2)
-        
+        # Ranking calculations based on latest normalized performances
+        all_algorithms = list(latest_performances.keys())
+        total_algorithms = len(all_algorithms)
+        time_rank = throughput_rank = memory_rank = 0
+        if total_algorithms > 1:
+            sorted_time = sorted(latest_performances.items(), key=lambda kv: kv[1]['time_performance'])
+            sorted_throughput = sorted(latest_performances.items(), key=lambda kv: kv[1]['throughput_performance'], reverse=True)
+            sorted_memory = sorted(latest_performances.items(), key=lambda kv: kv[1]['memory_performance'])
+            current_key = f"{algorithm}-{mode}"
+            time_rank = next((i for i, (name, _) in enumerate(sorted_time) if name == current_key), 0)
+            throughput_rank = next((i for i, (name, _) in enumerate(sorted_throughput) if name == current_key), 0)
+            memory_rank = next((i for i, (name, _) in enumerate(sorted_memory) if name == current_key), 0)
+
         # Log some debug information
         logger.info(f"Benchmark completed: {algorithm}-{mode}, {iterations} iterations, {len(data_bytes)} bytes")
         logger.info(f"Raw encryption times: {encryption_times[:5]}... (showing first 5)")
@@ -1472,9 +1957,17 @@ def benchmark():
         logger.info(f"Raw decryption memory: {decryption_memory[:5]}... (showing first 5)")
         logger.info(f"Memory statistics - Avg Enc: {avg_encryption_memory:.4f}MB, Avg Dec: {avg_decryption_memory:.4f}MB, Peak: {avg_peak_memory:.4f}MB")
         logger.info(f"Memory composition - Data: {data_size_mb:.4f}MB, Key: {sys.getsizeof(key)/1024/1024:.6f}MB")
-        logger.info(f"Performance metrics - Time: {time_performance:.6f} MB/ms, Throughput: {throughput_performance:.2f} MB/s, Memory: {memory_performance:.6f} MB")
+        logger.info(f"Performance metrics - Latency: {time_performance:.6f} ms, Throughput: {throughput_performance:.2f} MB/s, Memory: {memory_performance:.6f} MB")
         logger.info(f"Calculations - Data size: {data_size_mb:.6f} MB, Total time: {total_time:.6f} ms, Avg throughput: {avg_throughput:.2f} MB/s")
-        logger.info(f"Ranking-based scores - Time: {time_score:.2f}/100 (40%), Throughput: {throughput_score:.2f}/100 (35%), Memory: {memory_score:.2f}/100 (25%), Total: {efficiency_score:.2f}/100")
+        logger.info(
+            "Scoring model: %s | Enc: %.2f | Dec: %.2f | Throughput: %.2f | Memory: %.2f | Total: %.2f/100",
+            scoring_model,
+            enc_score * 100,
+            dec_score * 100,
+            throughput_score * 100,
+            memory_score * 100,
+            efficiency_score
+        )
         logger.info(f"Algorithm ranking - Total algorithms tested: {len(all_algorithms)}, Current: {algorithm}-{mode}")
         if len(all_algorithms) > 1:
             logger.info(f"Rankings - Time: #{time_rank + 1}/{total_algorithms}, Throughput: #{throughput_rank + 1}/{total_algorithms}, Memory: #{memory_rank + 1}/{total_algorithms}")
@@ -1542,14 +2035,12 @@ def benchmark():
                         'memoryPerformance': round(memory_performance, 6)  # MB
                     },
                     'efficiencyScore': efficiency_score,
-                    'efficiencyBreakdown': {
-                        'timeScore': round(time_score, 2),
-                        'throughputScore': round(throughput_score, 2),
-                        'memoryScore': round(memory_score, 2)
-                    }
+                    'efficiencyBreakdown': score_breakdown,
+                    'scoringModel': scoring_model
                 }
             },
-            'timestamp': time.time()
+            'timestamp': time.time(),
+            'scoringModel': scoring_model
         }
         
         return jsonify({
