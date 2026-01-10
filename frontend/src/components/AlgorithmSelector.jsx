@@ -23,7 +23,9 @@ const AlgorithmSelector = ({ selectedAlgorithm, onAlgorithmChange }) => {
     'RC2': 'RC2',
     'SM4': 'SM4',
     'SALSA20': 'Salsa20',
-    'CHACHA20': 'ChaCha20'
+    'CHACHA20': 'ChaCha20',
+    'RAILFENCE': 'Rail Fence',
+    'MORSE': 'Morse Code'
   };
   const algorithmInfo = {
     'AES': {
@@ -109,6 +111,32 @@ const AlgorithmSelector = ({ selectedAlgorithm, onAlgorithmChange }) => {
       keyGeneration: 'Use random 32-byte keys; never reuse nonce with the same key.',
       iv: 'Nonce is 12 bytes; counter sets keystream block start.',
       padding: 'No padding (stream cipher).'
+    },
+    'RAILFENCE': {
+      name: 'Rail Fence Cipher',
+      description: 'Rail Fence is a classical transposition cipher that writes text in a zigzag across rails and reads row by row.',
+      keyInfo: [
+        'Rails: 2-64',
+        'Offset: 0+ (shift start position)',
+        'Higher rails increase diffusion but remain reversible',
+        'Best for learning, not modern security'
+      ],
+      keyGeneration: 'Set rails and an optional offset for the zigzag start.',
+      iv: 'No IV or nonce required.',
+      padding: 'No padding (pure transposition).'
+    },
+    'MORSE': {
+      name: 'Morse Code',
+      description: 'Morse Code encodes letters and numbers into dots and dashes separated by configurable delimiters.',
+      keyInfo: [
+        'Letter delimiter: space (default)',
+        'Word delimiter: line feed (default)',
+        'Dot symbol: .',
+        'Dash symbol: -'
+      ],
+      keyGeneration: 'No key required. Configure delimiters and dot/dash symbols.',
+      iv: 'No IV or nonce required.',
+      padding: 'No padding (symbol encoding).'
     }
   };
 

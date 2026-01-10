@@ -76,6 +76,16 @@ def test_encryption_decryption(algorithm, mode, encoding, plaintext, key=None, e
                 decrypt_data['rounds'] = extra['rounds']
             if 'counter' in extra:
                 decrypt_data['counter'] = extra['counter']
+            if 'offset' in extra:
+                decrypt_data['offset'] = extra['offset']
+            if 'letter_delimiter' in extra:
+                decrypt_data['letter_delimiter'] = extra['letter_delimiter']
+            if 'word_delimiter' in extra:
+                decrypt_data['word_delimiter'] = extra['word_delimiter']
+            if 'dot_symbol' in extra:
+                decrypt_data['dot_symbol'] = extra['dot_symbol']
+            if 'dash_symbol' in extra:
+                decrypt_data['dash_symbol'] = extra['dash_symbol']
 
         decrypt_response = requests.post(f'{BASE_URL}/decrypt', json=decrypt_data)
 
@@ -126,6 +136,10 @@ def main():
         # ChaCha20 stream cipher
         {'algorithm': 'CHACHA20', 'mode': 'STREAM', 'encoding': 'RAW', 'plaintext': 'Hello, ChaCha20!', 'extra': {'rounds': 20, 'counter': 1}},
         {'algorithm': 'CHACHA20', 'mode': 'STREAM', 'encoding': 'HEX', 'plaintext': '48656c6c6f2c20436861436861323021', 'extra': {'rounds': 12, 'counter': 0}},
+        # Rail Fence cipher
+        {'algorithm': 'RAILFENCE', 'mode': 'RAILFENCE', 'encoding': 'RAW', 'plaintext': 'HELLO RAILFENCE', 'extra': {'offset': 2}},
+        # Morse Code
+        {'algorithm': 'MORSE', 'mode': 'MORSE', 'encoding': 'RAW', 'plaintext': 'HELLO WORLD', 'extra': {'letter_delimiter': ' ', 'word_delimiter': '\n', 'dot_symbol': '.', 'dash_symbol': '-'}},
     ]
 
     passed = 0

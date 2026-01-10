@@ -16,7 +16,15 @@ export const cryptoAPI = {
           outputFormat: data.outputFormat || 'HEX',
           key: data.key || undefined,
           iv_or_nonce: data.iv_or_nonce,
+          key_format: data.key_format,
+          iv_format: data.iv_format,
           keySize: data.keySize,
+          rails: data.rails,
+          offset: data.offset,
+          letter_delimiter: data.letter_delimiter,
+          word_delimiter: data.word_delimiter,
+          dot_symbol: data.dot_symbol,
+          dash_symbol: data.dash_symbol,
           rounds: data.rounds,
           counter: data.counter
         })
@@ -32,9 +40,13 @@ export const cryptoAPI = {
         success: true,
         output: result.result.ciphertext,
         key: result.result.key,
+        offset: result.result.offset,
         iv_or_nonce: result.result.iv_or_nonce,
         tag: result.result.tag,
         keyGenerated: result.result.key_generated,
+        keyFormat: result.result.key_format,
+        ivFormat: result.result.iv_format,
+        caseSequence: result.result.case_sequence,
         algorithm: result.result.algorithm,
         mode: result.result.mode,
         executionTime: result.result.executionTime
@@ -63,7 +75,16 @@ export const cryptoAPI = {
           output_encoding: data.outputFormat || 'HEX',
           key: data.key,
           iv_or_nonce: data.iv_or_nonce,
+          key_format: data.key_format,
+          iv_format: data.iv_format,
           tag: data.tag,
+          rails: data.rails,
+          offset: data.offset,
+          letter_delimiter: data.letter_delimiter,
+          word_delimiter: data.word_delimiter,
+          dot_symbol: data.dot_symbol,
+          dash_symbol: data.dash_symbol,
+          case_sequence: data.case_sequence,
           rounds: data.rounds,
           counter: data.counter
         })
@@ -78,6 +99,11 @@ export const cryptoAPI = {
       return {
         success: true,
         output: result.result.plaintext,
+        key: result.result.key,
+        offset: result.result.offset,
+        caseSequence: result.result.case_sequence,
+        keyFormat: result.result.key_format,
+        ivFormat: result.result.iv_format,
         algorithm: result.result.algorithm,
         mode: result.result.mode,
         executionTime: result.result.executionTime
@@ -146,6 +172,12 @@ export const cryptoAPI = {
           iterations: data.iterations || 10,
           scoringModel: data.scoringModel || 'general',
           powerConsumption: data.powerConsumption,
+          ...(data.rails !== undefined ? { rails: data.rails } : {}),
+          ...(data.offset !== undefined ? { offset: data.offset } : {}),
+          ...(data.letter_delimiter !== undefined ? { letter_delimiter: data.letter_delimiter } : {}),
+          ...(data.word_delimiter !== undefined ? { word_delimiter: data.word_delimiter } : {}),
+          ...(data.dot_symbol !== undefined ? { dot_symbol: data.dot_symbol } : {}),
+          ...(data.dash_symbol !== undefined ? { dash_symbol: data.dash_symbol } : {}),
           ...(data.rounds ? { rounds: data.rounds } : {})
         })
       });

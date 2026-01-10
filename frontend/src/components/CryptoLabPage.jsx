@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Shield, Zap } from 'lucide-react';
 import ResizablePanel from './ResizablePanel';
 import AlgorithmSelector from './AlgorithmSelector';
@@ -32,6 +32,188 @@ html, body, #root {
   100% { stroke-dasharray: 90, 150; stroke-dashoffset: -120px; }
 }
 `;
+
+const MORSE_DELIMITER_OPTIONS = [
+  { label: 'Space', value: 'SPACE' },
+  { label: 'Line feed', value: 'LINE_FEED' },
+  { label: 'CRLF', value: 'CRLF' },
+  { label: 'Forward slash', value: 'FORWARD_SLASH' },
+  { label: 'Backslash', value: 'BACKSLASH' },
+  { label: 'Comma', value: 'COMMA' },
+  { label: 'Semi-colon', value: 'SEMICOLON' },
+  { label: 'Colon', value: 'COLON' }
+];
+
+const MORSE_LETTER_DELIMITER_OPTIONS = MORSE_DELIMITER_OPTIONS;
+const MORSE_WORD_DELIMITER_OPTIONS = MORSE_DELIMITER_OPTIONS;
+
+const MORSE_DELIMITER_VALUES = {
+  SPACE: ' ',
+  LINE_FEED: '\n',
+  CRLF: '\r\n',
+  FORWARD_SLASH: '/',
+  BACKSLASH: '\\',
+  COMMA: ',',
+  SEMICOLON: ';',
+  COLON: ':'
+};
+
+const MORSE_FORMAT_OPTIONS = [
+  { label: '-/.', value: '-/.' },
+  { label: '/-.', value: '/-.' },
+  { label: 'Dash/Dot', value: 'Dash/Dot' },
+  { label: 'DASH/DOT', value: 'DASH/DOT' },
+  { label: 'dash/dot', value: 'dash/dot' }
+];
+
+const MORSE_FORMAT_SYMBOLS = {
+  '-/.': { dotSymbol: '.', dashSymbol: '-' },
+  '/-.': { dotSymbol: '-', dashSymbol: '.' },
+  'Dash/Dot': { dotSymbol: 'Dot', dashSymbol: 'Dash' },
+  'DASH/DOT': { dotSymbol: 'DOT', dashSymbol: 'DASH' },
+  'dash/dot': { dotSymbol: 'dot', dashSymbol: 'dash' }
+};
+
+const getMorseFormatSymbols = (formatOption, fallbackDot = '.', fallbackDash = '-') => {
+  const match = MORSE_FORMAT_SYMBOLS[formatOption];
+  if (match) {
+    return match;
+  }
+  return { dotSymbol: fallbackDot, dashSymbol: fallbackDash };
+};
+
+const inferMorseFormatOption = (dotSymbol, dashSymbol) => {
+  const match = Object.entries(MORSE_FORMAT_SYMBOLS).find(([, value]) => (
+    value.dotSymbol === dotSymbol && value.dashSymbol === dashSymbol
+  ));
+  return match ? match[0] : '-/.';
+};
+
+const resolveMorseDelimiter = (value, isWordDelimiter) => {
+  const resolved = MORSE_DELIMITER_VALUES[value];
+  if (resolved !== undefined) {
+    return resolved;
+  }
+  return isWordDelimiter ? '\n' : ' ';
+};
+
+const getMorseDelimiterLabel = (value) => {
+  const match = MORSE_DELIMITER_OPTIONS.find(option => option.value === value);
+  return match ? match.label : value;
+};
+
+const formatBytesToHex = (bytes) => (
+  Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
+);
+
+const normalizeHexInput = (value) => (
+  value.trim().replace(/^0x/i, '').replace(/\s+/g, '')
+);
+
+const normalizeSecretInput = (value, format, label) => {
+  if (!value) return '';
+  if (format === 'HEX') {
+    const normalized = normalizeHexInput(value);
+    if (normalized.length % 2 !== 0) {
+      throw new Error(`${label} HEX must have an even length.`);
+    }
+    if (!/^[0-9a-fA-F]*$/.test(normalized)) {
+      throw new Error(`${label} HEX contains invalid characters.`);
+    }
+    return normalized;
+  }
+  if (format === 'UTF8') {
+    return value;
+  }
+  if (format === 'LATIN1') {
+    for (let i = 0; i < value.length; i += 1) {
+      const code = value.charCodeAt(i);
+      if (code > 255) {
+        throw new Error(`${label} Latin1 must use characters in the 0-255 range.`);
+      }
+    }
+    return value;
+  }
+  if (format === 'BASE64') {
+    try {
+      let sanitized = value.replace(/\s+/g, '');
+      if (sanitized.length % 4 !== 0) {
+        sanitized += '='.repeat(4 - (sanitized.length % 4));
+      }
+      atob(sanitized);
+      return sanitized;
+    } catch (error) {
+      throw new Error(`${label} Base64 is invalid.`);
+    }
+  }
+  return value;
+};
+
+const ASCII_KEY_POOL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+
+const buildRandomAscii = (length) => {
+  if (length <= 0) return '';
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  let result = '';
+  for (let i = 0; i < length; i += 1) {
+    result += ASCII_KEY_POOL[bytes[i] % ASCII_KEY_POOL.length];
+  }
+  return result;
+};
+
+const bytesToLatin1 = (bytes) => {
+  let result = '';
+  for (let i = 0; i < bytes.length; i += 1) {
+    result += String.fromCharCode(bytes[i]);
+  }
+  return result;
+};
+
+const bytesToBase64 = (bytes) => {
+  return btoa(bytesToLatin1(bytes));
+};
+
+const formatSecretBytes = (bytes, format) => {
+  if (format === 'HEX') {
+    return formatBytesToHex(bytes);
+  }
+  if (format === 'BASE64') {
+    return bytesToBase64(bytes);
+  }
+  if (format === 'LATIN1') {
+    return bytesToLatin1(bytes);
+  }
+  return formatBytesToHex(bytes);
+};
+
+const buildRailFenceGrid = (text, rails, offset = 0, placeholder = '.') => {
+  if (!text) return [];
+  const railCount = Number.isFinite(rails) ? rails : parseInt(rails, 10);
+  if (!railCount || railCount < 2) return [];
+  const length = text.length;
+  if (!length) return [];
+
+  const pattern = [];
+  for (let i = 0; i < railCount; i += 1) pattern.push(i);
+  for (let i = railCount - 2; i > 0; i -= 1) pattern.push(i);
+
+  const cycle = pattern.length || 1;
+  const start = ((offset || 0) % cycle + cycle) % cycle;
+  const rows = Array.from({ length: railCount }, () => Array(length).fill(placeholder));
+
+  for (let i = 0; i < length; i += 1) {
+    const row = pattern[(start + i) % cycle];
+    rows[row][i] = text[i];
+  }
+
+  return rows;
+};
+
+const buildRailFenceZigzagString = (grid) => {
+  if (!grid || !grid.length) return '';
+  return grid.map(row => row.join(' ')).join('\n');
+};
 
 // Vertical Resizable Panel Component
 const VerticalResizablePanel = ({
@@ -110,6 +292,14 @@ const CryptoLabPage = () => {
   const [inputType, setInputType] = useState('text');
   const [customKey, setCustomKey] = useState('');
   const [customIV, setCustomIV] = useState('');
+  const [keyFormat, setKeyFormat] = useState('HEX');
+  const [ivFormat, setIvFormat] = useState('HEX');
+  const [railOffset, setRailOffset] = useState('0');
+  const [morseLetterDelimiter, setMorseLetterDelimiter] = useState('SPACE');
+  const [morseWordDelimiter, setMorseWordDelimiter] = useState('LINE_FEED');
+  const [morseFormatOption, setMorseFormatOption] = useState('-/.');
+  const [morseDotSymbol, setMorseDotSymbol] = useState('.');
+  const [morseDashSymbol, setMorseDashSymbol] = useState('-');
   const [salsaRounds, setSalsaRounds] = useState(20);
   const [salsaCounter, setSalsaCounter] = useState(0);
   const [chachaRounds, setChachaRounds] = useState(20);
@@ -129,6 +319,29 @@ const CryptoLabPage = () => {
   const inputText = activeTab?.inputText || '';
   const inputFile = activeTab?.inputFile || null;
   const result = activeTab?.result || null;
+  const algorithmSummary = selectedAlgorithm === 'RAILFENCE'
+    ? `${selectedAlgorithm} (rails: ${customKey || '2-64'}, offset: ${railOffset || '0'})`
+    : selectedAlgorithm === 'MORSE'
+      ? `Morse Code (letter: ${getMorseDelimiterLabel(morseLetterDelimiter)}, word: ${getMorseDelimiterLabel(morseWordDelimiter)})`
+      : `${selectedAlgorithm}-${selectedKeySize}-${selectedMode}`;
+  const railFenceRails = selectedAlgorithm === 'RAILFENCE'
+    ? parseInt(result?.key || customKey || '', 10)
+    : null;
+  const railFenceOffset = selectedAlgorithm === 'RAILFENCE'
+    ? (Number.isFinite(result?.offset) ? result.offset : parseInt(railOffset, 10) || 0)
+    : 0;
+  const railFenceInput = useMemo(() => {
+    if (selectedAlgorithm !== 'RAILFENCE') return '';
+    if (result?.inputData !== undefined) return result.inputData;
+    return inputText ? inputText.replace(/\r?\n/g, '') : '';
+  }, [selectedAlgorithm, result?.inputData, inputText]);
+  const railFenceGrid = useMemo(() => {
+    if (selectedAlgorithm !== 'RAILFENCE' || !railFenceInput) return [];
+    if (!railFenceRails || railFenceRails < 2) return [];
+    return buildRailFenceGrid(railFenceInput, railFenceRails, railFenceOffset, '.');
+  }, [selectedAlgorithm, railFenceInput, railFenceRails, railFenceOffset]);
+  const railFenceZigzag = useMemo(() => buildRailFenceZigzagString(railFenceGrid), [railFenceGrid]);
+  const showRailFenceVisualization = selectedAlgorithm === 'RAILFENCE' && railFenceGrid.length > 0 && result?.output;
 
   const updateActiveTab = (updates) => {
     setTabs(prevTabs => prevTabs.map(tab => (
@@ -250,6 +463,30 @@ const CryptoLabPage = () => {
 
   // Reset mode and key size when algorithm changes
   useEffect(() => {
+    if (selectedAlgorithm === 'RAILFENCE') {
+      setSelectedMode('RAILFENCE');
+      setSelectedKeySize('');
+      setCustomIV('');
+      setRailOffset('0');
+      setCustomKey('3');
+      setInputFormat('RAW');
+      setOutputFormat('RAW');
+      return;
+    }
+    if (selectedAlgorithm === 'MORSE') {
+      setSelectedMode('MORSE');
+      setSelectedKeySize('');
+      setCustomKey('');
+      setCustomIV('');
+      setInputFormat('RAW');
+      setOutputFormat('RAW');
+      setMorseLetterDelimiter('SPACE');
+      setMorseWordDelimiter('LINE_FEED');
+      setMorseFormatOption('-/.');
+      setMorseDotSymbol('.');
+      setMorseDashSymbol('-');
+      return;
+    }
     // Reset mode for algorithms that don't support CTR/GCM
     if ((selectedAlgorithm === '3DES' || selectedAlgorithm === 'BLOWFISH') && ['CTR', 'GCM'].includes(selectedMode)) {
       setSelectedMode('CBC'); // Reset to a supported mode for 3DES and Blowfish
@@ -301,6 +538,18 @@ const CryptoLabPage = () => {
   const generateRandomKey = () => {
     let keyLength;
     
+    if (selectedAlgorithm === 'RAILFENCE') {
+      const minRails = 2;
+      const maxRails = 10;
+      const rails = Math.floor(Math.random() * (maxRails - minRails + 1)) + minRails;
+      setCustomKey(String(rails));
+      return;
+    }
+    if (selectedAlgorithm === 'MORSE') {
+      setCustomKey('');
+      return;
+    }
+
     if (selectedAlgorithm === 'AES') {
       // AES key sizes: 128, 192, 256 bits
       const keySize = parseInt(selectedKeySize);
@@ -327,13 +576,24 @@ const CryptoLabPage = () => {
     
     const array = new Uint8Array(keyLength);
     crypto.getRandomValues(array);
-    const hexKey = Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
-    setCustomKey(hexKey);
+    if (keyFormat === 'UTF8') {
+      setCustomKey(buildRandomAscii(keyLength));
+      return;
+    }
+    setCustomKey(formatSecretBytes(array, keyFormat));
   };
 
   // Generate random IV
   const generateRandomIV = () => {
     let ivLength;
+    if (selectedAlgorithm === 'RAILFENCE') {
+      setCustomIV('');
+      return;
+    }
+    if (selectedAlgorithm === 'MORSE') {
+      setCustomIV('');
+      return;
+    }
     if (selectedAlgorithm === '3DES' || selectedAlgorithm === 'BLOWFISH' || selectedAlgorithm === 'RC2') {
       ivLength = 8; // 64-bit for 3DES, Blowfish, and RC2
     } else if (selectedAlgorithm === 'SALSA20') {
@@ -345,8 +605,11 @@ const CryptoLabPage = () => {
     }
     const array = new Uint8Array(ivLength);
     crypto.getRandomValues(array);
-    const hexIV = Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
-    setCustomIV(hexIV);
+    if (ivFormat === 'UTF8') {
+      setCustomIV(buildRandomAscii(ivLength));
+      return;
+    }
+    setCustomIV(formatSecretBytes(array, ivFormat));
   };
 
   // Copy to clipboard function
@@ -388,6 +651,37 @@ const CryptoLabPage = () => {
       } else if (inputFile) {
         inputData = await inputFile.text();
       }
+      if (selectedAlgorithm === 'RAILFENCE') {
+        inputData = inputData.replace(/\r?\n/g, '');
+      }
+      if (selectedAlgorithm === 'MORSE') {
+        const dotSymbol = morseDotSymbol || '.';
+        const dashSymbol = morseDashSymbol || '-';
+        if (!dotSymbol || !dashSymbol) {
+          alert('Morse dot and dash symbols cannot be empty.');
+          return;
+        }
+        if (dotSymbol === dashSymbol) {
+          alert('Morse dot and dash symbols must be different.');
+          return;
+        }
+      }
+
+      let normalizedKey;
+      let normalizedIV;
+      if (selectedAlgorithm !== 'RAILFENCE' && selectedAlgorithm !== 'MORSE') {
+        try {
+          if (customKey) {
+            normalizedKey = normalizeSecretInput(customKey, keyFormat, 'Key');
+          }
+          if (customIV) {
+            normalizedIV = normalizeSecretInput(customIV, ivFormat, 'IV/Nonce');
+          }
+        } catch (error) {
+          alert(error.message);
+          return;
+        }
+      }
 
       const requestData = {
         algorithm: selectedAlgorithm,
@@ -395,10 +689,24 @@ const CryptoLabPage = () => {
         input: inputData,
         inputFormat: inputFormat,
         outputFormat: outputFormat,
-        key: customKey || undefined,
-        iv_or_nonce: customIV || undefined,
-        keySize: selectedKeySize ? parseInt(selectedKeySize) / 8 : undefined // Convert bits to bytes
+        key: selectedAlgorithm === 'MORSE' || selectedAlgorithm === 'RAILFENCE' ? undefined : (normalizedKey || undefined),
+        iv_or_nonce: (selectedAlgorithm === 'RAILFENCE' || selectedAlgorithm === 'MORSE') ? undefined : (normalizedIV || undefined),
+        key_format: (selectedAlgorithm === 'MORSE' || selectedAlgorithm === 'RAILFENCE') ? undefined : keyFormat,
+        iv_format: (selectedAlgorithm === 'RAILFENCE' || selectedAlgorithm === 'MORSE') ? undefined : ivFormat
       };
+      if (selectedAlgorithm === 'MORSE') {
+        requestData.letter_delimiter = resolveMorseDelimiter(morseLetterDelimiter, false);
+        requestData.word_delimiter = resolveMorseDelimiter(morseWordDelimiter, true);
+        requestData.dot_symbol = morseDotSymbol || '.';
+        requestData.dash_symbol = morseDashSymbol || '-';
+      } else if (selectedAlgorithm !== 'RAILFENCE') {
+        requestData.keySize = selectedKeySize ? parseInt(selectedKeySize, 10) / 8 : undefined; // Convert bits to bytes
+      } else {
+        if (customKey) {
+          requestData.rails = parseInt(customKey, 10);
+        }
+        requestData.offset = parseInt(railOffset, 10) || 0;
+      }
       if (selectedAlgorithm === 'SALSA20') {
         requestData.rounds = parseInt(salsaRounds, 10) || 20;
         requestData.counter = parseInt(salsaCounter, 10) || 0;
@@ -412,13 +720,19 @@ const CryptoLabPage = () => {
         response = await cryptoAPI.encrypt(requestData);
       } else {
         // For decryption, we need the key and IV from a previous encryption
-        if (!customKey) {
+        if (selectedAlgorithm !== 'MORSE' && !customKey) {
           alert('Key is required for decryption');
           return;
+        }
+        if (selectedAlgorithm === 'MORSE' && result?.caseSequence && result?.output === inputData) {
+          requestData.case_sequence = result.caseSequence;
         }
         // Try to get IV from previous result
         if (result?.iv_or_nonce) {
           requestData.iv_or_nonce = result.iv_or_nonce;
+          if (result?.ivFormat) {
+            requestData.iv_format = result.ivFormat;
+          }
         }
         if (result?.tag) {
           requestData.tag = result.tag;
@@ -427,12 +741,12 @@ const CryptoLabPage = () => {
       }
 
       if (response.success) {
-        setActiveResult(response);
+        const enrichedResponse = { ...response, inputData, operation };
+        setActiveResult(enrichedResponse);
         
         // Add to history
         const historyItem = {
-          ...response,
-          operation,
+          ...enrichedResponse,
           timestamp: new Date().toISOString()
         };
         
@@ -501,7 +815,15 @@ const CryptoLabPage = () => {
                       mode: selectedMode,
                       key: customKey,
                       iv: customIV,
-                      operation: operation
+                      keyFormat: keyFormat,
+                      ivFormat: ivFormat,
+                      operation: operation,
+                      offset: selectedAlgorithm === 'RAILFENCE' ? railOffset : undefined,
+                      morseLetterDelimiter: morseLetterDelimiter,
+                      morseWordDelimiter: morseWordDelimiter,
+                      morseFormatOption: morseFormatOption,
+                      morseDotSymbol: morseDotSymbol,
+                      morseDashSymbol: morseDashSymbol
                     };
                     const dataStr = JSON.stringify(algorithmConfig, null, 2);
                     const dataBlob = new Blob([dataStr], {type: 'application/json'});
@@ -536,7 +858,22 @@ const CryptoLabPage = () => {
                             setSelectedMode(config.mode || 'CBC');
                             setCustomKey(config.key || '');
                             setCustomIV(config.iv || '');
+                            setKeyFormat(config.keyFormat || 'HEX');
+                            setIvFormat(config.ivFormat || 'HEX');
                             setOperation(config.operation || 'encrypt');
+                            setRailOffset(config.offset !== undefined ? String(config.offset) : '0');
+                            const nextFormatOption = config.morseFormatOption
+                              || inferMorseFormatOption(config.morseDotSymbol, config.morseDashSymbol);
+                            const symbols = getMorseFormatSymbols(
+                              nextFormatOption,
+                              config.morseDotSymbol || '.',
+                              config.morseDashSymbol || '-'
+                            );
+                            setMorseLetterDelimiter(config.morseLetterDelimiter || 'SPACE');
+                            setMorseWordDelimiter(config.morseWordDelimiter || 'LINE_FEED');
+                            setMorseFormatOption(nextFormatOption);
+                            setMorseDotSymbol(symbols.dotSymbol);
+                            setMorseDashSymbol(symbols.dashSymbol);
                           } catch (error) {
                             alert('Invalid configuration file');
                           }
@@ -560,8 +897,16 @@ const CryptoLabPage = () => {
                     setSelectedKeySize('');
                     setCustomKey('');
                     setCustomIV('');
+                    setKeyFormat('HEX');
+                    setIvFormat('HEX');
+                    setRailOffset('0');
                     setSalsaRounds(20);
                     setSalsaCounter(0);
+                    setMorseLetterDelimiter('SPACE');
+                    setMorseWordDelimiter('LINE_FEED');
+                    setMorseFormatOption('-/.');
+                    setMorseDotSymbol('.');
+                    setMorseDashSymbol('-');
                     setOperation('encrypt');
                     setActiveResult(null);
                     setHistory([]);
@@ -581,127 +926,257 @@ const CryptoLabPage = () => {
             {selectedAlgorithm && (
               <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4 shadow-sm">
                 <div className="mb-3">
-                  <h3 className="text-lg font-semibold text-gray-900">{selectedAlgorithm}-{selectedKeySize}-{selectedMode}</h3>
+                  <h3 className="text-lg font-semibold text-gray-900">{algorithmSummary}</h3>
                 </div>
                 
                 {/* Key Size Selection */}
-                <div className="mb-3">
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Key Size</label>
-                  <select 
-                    value={selectedKeySize}
-                    onChange={(e) => setSelectedKeySize(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-                  >
-                    {selectedAlgorithm === 'AES' && (
-                      <>
-                        <option value="128">128 bits (16 bytes) - AES-128</option>
-                        <option value="192">192 bits (24 bytes) - AES-192</option>
-                        <option value="256">256 bits (32 bytes) - AES-256</option>
-                      </>
-                    )}
-                    {selectedAlgorithm === '3DES' && (
-                      <>
-                        <option value="112">112 bits (16 bytes) - Two-key 3DES</option>
-                        <option value="168">168 bits (24 bytes) - Three-key 3DES</option>
-                      </>
-                    )}
-                    {selectedAlgorithm === 'BLOWFISH' && (
-                      <>
-                        <option value="32">32 bits (4 bytes) - Minimum</option>
-                        <option value="64">64 bits (8 bytes) - Original default</option>
-                        <option value="128">128 bits (16 bytes) - Common usage</option>
-                        <option value="192">192 bits (24 bytes)</option>
-                        <option value="256">256 bits (32 bytes)</option>
-                        <option value="320">320 bits (40 bytes)</option>
-                        <option value="384">384 bits (48 bytes)</option>
-                        <option value="448">448 bits (56 bytes) - Maximum</option>
-                      </>
-                    )}
-                    {selectedAlgorithm === 'RC2' && (
-                      <>
-                        <option value="40">40 bits (5 bytes) - Common effective key length</option>
-                        <option value="64">64 bits (8 bytes) - Common effective key length</option>
-                        <option value="128">128 bits (16 bytes) - Common effective key length</option>
-                        <option value="256">256 bits (32 bytes)</option>
-                        <option value="512">512 bits (64 bytes)</option>
-                        <option value="1024">1024 bits (128 bytes) - Maximum</option>
-                      </>
-                    )}
-                    {selectedAlgorithm === 'SM4' && (
-                      <>
-                        <option value="128">128 bits (16 bytes) - SM4 Standard</option>
-                      </>
-                    )}
-                    {selectedAlgorithm === 'CHACHA20' && (
-                      <>
-                        <option value="256">256 bits (32 bytes) - Required</option>
-                      </>
-                    )}
-                    {selectedAlgorithm === 'SALSA20' && (
-                      <>
-                        <option value="128">128 bits (16 bytes)</option>
-                        <option value="256">256 bits (32 bytes) - Recommended</option>
-                      </>
-                    )}
+                {selectedAlgorithm !== 'RAILFENCE' && selectedAlgorithm !== 'MORSE' && (
+                  <div className="mb-3">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Key Size</label>
+                    <select 
+                      value={selectedKeySize}
+                      onChange={(e) => setSelectedKeySize(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                    >
+                      {selectedAlgorithm === 'AES' && (
+                        <>
+                          <option value="128">128 bits (16 bytes) - AES-128</option>
+                          <option value="192">192 bits (24 bytes) - AES-192</option>
+                          <option value="256">256 bits (32 bytes) - AES-256</option>
+                        </>
+                      )}
+                      {selectedAlgorithm === '3DES' && (
+                        <>
+                          <option value="112">112 bits (16 bytes) - Two-key 3DES</option>
+                          <option value="168">168 bits (24 bytes) - Three-key 3DES</option>
+                        </>
+                      )}
+                      {selectedAlgorithm === 'BLOWFISH' && (
+                        <>
+                          <option value="32">32 bits (4 bytes) - Minimum</option>
+                          <option value="64">64 bits (8 bytes) - Original default</option>
+                          <option value="128">128 bits (16 bytes) - Common usage</option>
+                          <option value="192">192 bits (24 bytes)</option>
+                          <option value="256">256 bits (32 bytes)</option>
+                          <option value="320">320 bits (40 bytes)</option>
+                          <option value="384">384 bits (48 bytes)</option>
+                          <option value="448">448 bits (56 bytes) - Maximum</option>
+                        </>
+                      )}
+                      {selectedAlgorithm === 'RC2' && (
+                        <>
+                          <option value="40">40 bits (5 bytes) - Common effective key length</option>
+                          <option value="64">64 bits (8 bytes) - Common effective key length</option>
+                          <option value="128">128 bits (16 bytes) - Common effective key length</option>
+                          <option value="256">256 bits (32 bytes)</option>
+                          <option value="512">512 bits (64 bytes)</option>
+                          <option value="1024">1024 bits (128 bytes) - Maximum</option>
+                        </>
+                      )}
+                      {selectedAlgorithm === 'SM4' && (
+                        <>
+                          <option value="128">128 bits (16 bytes) - SM4 Standard</option>
+                        </>
+                      )}
+                      {selectedAlgorithm === 'CHACHA20' && (
+                        <>
+                          <option value="256">256 bits (32 bytes) - Required</option>
+                        </>
+                      )}
+                      {selectedAlgorithm === 'SALSA20' && (
+                        <>
+                          <option value="128">128 bits (16 bytes)</option>
+                          <option value="256">256 bits (32 bytes) - Recommended</option>
+                        </>
+                      )}
 
-                  </select>
-                </div>
+                    </select>
+                  </div>
+                )}
                 
                 {/* Key Input */}
-                <div className="mb-3">
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Key</label>
-                  <div className="flex space-x-2">
-                    <select className="px-3 py-2 border border-gray-300 rounded text-sm bg-white">
-                      <option>HEX</option>
-                      <option>RAW</option>
-                    </select>
-                    <div className="flex-1 relative flex items-center space-x-2">
-                      <input
-                        type="text"
-                        value={customKey}
-                        onChange={(e) => setCustomKey(e.target.value)}
-                        placeholder={`Enter ${selectedKeySize}-bit encryption key...`}
-                        className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                      <button
-                        onClick={() => copyToClipboard(customKey)}
-                        type="button"
-                        className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
-                        title="Copy key"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                        </svg>
-                      </button>
-                      <button
-                        onClick={generateRandomKey}
-                        type="button"
-                        className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
-                        title={`Generate random ${selectedKeySize}-bit key`}
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                        </svg>
-                      </button>
+                {selectedAlgorithm !== 'MORSE' && (
+                  <div className="mb-3">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      {selectedAlgorithm === 'RAILFENCE' ? 'Rails' : 'Key'}
+                    </label>
+                    <div className="flex space-x-2">
+                      {selectedAlgorithm !== 'RAILFENCE' && (
+                        <select
+                          value={keyFormat}
+                          onChange={(e) => setKeyFormat(e.target.value)}
+                          className="px-3 py-2 border border-gray-300 rounded text-sm bg-white"
+                        >
+                          <option value="HEX">Hex</option>
+                          <option value="UTF8">UTF8</option>
+                          <option value="LATIN1">Latin1</option>
+                          <option value="BASE64">Base64</option>
+                        </select>
+                      )}
+                      <div className="flex-1 relative flex items-center space-x-2">
+                        <input
+                          type={selectedAlgorithm === 'RAILFENCE' ? 'number' : 'text'}
+                          min={selectedAlgorithm === 'RAILFENCE' ? '2' : undefined}
+                          max={selectedAlgorithm === 'RAILFENCE' ? '64' : undefined}
+                          value={customKey}
+                          onChange={(e) => setCustomKey(e.target.value)}
+                          placeholder={
+                            selectedAlgorithm === 'RAILFENCE'
+                              ? 'Enter rails (2-64)...'
+                              : (selectedKeySize ? `Enter ${selectedKeySize}-bit ${keyFormat} key...` : `Enter ${keyFormat} key...`)
+                          }
+                          className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        <button
+                          onClick={() => copyToClipboard(customKey)}
+                          type="button"
+                          className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
+                          title={selectedAlgorithm === 'RAILFENCE' ? 'Copy rails' : 'Copy key'}
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                          </svg>
+                        </button>
+                        <button
+                          onClick={generateRandomKey}
+                          type="button"
+                          className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
+                          title={selectedAlgorithm === 'RAILFENCE' ? 'Generate random rails' : `Generate random ${selectedKeySize}-bit key`}
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                          </svg>
+                        </button>
+                      </div>
                     </div>
                   </div>
-                </div>
+                )}
+
+                {selectedAlgorithm === 'RAILFENCE' && (
+                  <div className="mb-3">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Offset</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={railOffset}
+                      onChange={(e) => setRailOffset(e.target.value)}
+                      placeholder="0"
+                      className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">Shift the zigzag start position.</p>
+                  </div>
+                )}
+
+                {selectedAlgorithm === 'MORSE' && (
+                  <div className="mb-3 space-y-3">
+                    {operation === 'encrypt' ? (
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                        <div className="bg-white border border-gray-200 rounded p-2">
+                          <div className="text-xs text-gray-500 mb-1">Format options</div>
+                          <select
+                            value={morseFormatOption}
+                            onChange={(e) => {
+                              const nextOption = e.target.value;
+                              const symbols = getMorseFormatSymbols(nextOption);
+                              setMorseFormatOption(nextOption);
+                              setMorseDotSymbol(symbols.dotSymbol);
+                              setMorseDashSymbol(symbols.dashSymbol);
+                            }}
+                            className="w-full text-sm font-medium text-gray-900 bg-transparent border-none focus:outline-none focus:ring-0"
+                          >
+                            {MORSE_FORMAT_OPTIONS.map(option => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="bg-white border border-gray-200 rounded p-2">
+                          <div className="text-xs text-gray-500 mb-1">Letter delimiter</div>
+                          <select
+                            value={morseLetterDelimiter}
+                            onChange={(e) => setMorseLetterDelimiter(e.target.value)}
+                            className="w-full text-sm font-medium text-gray-900 bg-transparent border-none focus:outline-none focus:ring-0"
+                          >
+                            {MORSE_LETTER_DELIMITER_OPTIONS.map(option => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="bg-white border border-gray-200 rounded p-2">
+                          <div className="text-xs text-gray-500 mb-1">Word delimiter</div>
+                          <select
+                            value={morseWordDelimiter}
+                            onChange={(e) => setMorseWordDelimiter(e.target.value)}
+                            className="w-full text-sm font-medium text-gray-900 bg-transparent border-none focus:outline-none focus:ring-0"
+                          >
+                            {MORSE_WORD_DELIMITER_OPTIONS.map(option => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                        <div className="bg-white border border-gray-200 rounded p-2">
+                          <div className="text-xs text-gray-500 mb-1">Letter delimiter</div>
+                          <select
+                            value={morseLetterDelimiter}
+                            onChange={(e) => setMorseLetterDelimiter(e.target.value)}
+                            className="w-full text-sm font-medium text-gray-900 bg-transparent border-none focus:outline-none focus:ring-0"
+                          >
+                            {MORSE_LETTER_DELIMITER_OPTIONS.map(option => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="bg-white border border-gray-200 rounded p-2">
+                          <div className="text-xs text-gray-500 mb-1">Word delimiter</div>
+                          <select
+                            value={morseWordDelimiter}
+                            onChange={(e) => setMorseWordDelimiter(e.target.value)}
+                            className="w-full text-sm font-medium text-gray-900 bg-transparent border-none focus:outline-none focus:ring-0"
+                          >
+                            {MORSE_WORD_DELIMITER_OPTIONS.map(option => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    )}
+                    {operation === 'encrypt' ? (
+                      <p className="text-xs text-gray-500">Format options control how dots and dashes are emitted.</p>
+                    ) : (
+                      <p className="text-xs text-gray-500">Letter and word delimiters control spacing in the input.</p>
+                    )}
+                  </div>
+                )}
                 
                 {/* IV Input (for AES, 3DES, Blowfish modes except ECB, RC2 CBC mode, and SM4 non-ECB modes) */}
                 {(selectedAlgorithm === 'SALSA20' || selectedAlgorithm === 'CHACHA20' || selectedAlgorithm === 'AES' || selectedAlgorithm === '3DES' || selectedAlgorithm === 'BLOWFISH' || selectedAlgorithm === 'RC2' || selectedAlgorithm === 'SM4') && selectedMode !== 'ECB' && (
                   <div className="mb-3">
                     <label className="block text-sm font-medium text-gray-700 mb-1">{(selectedAlgorithm === 'SALSA20' || selectedAlgorithm === 'CHACHA20') ? 'Nonce' : 'IV'}</label>
                     <div className="flex space-x-2">
-                      <select className="px-3 py-2 border border-gray-300 rounded text-sm bg-white">
-                        <option>HEX</option>
-                        <option>RAW</option>
+                      <select
+                        value={ivFormat}
+                        onChange={(e) => setIvFormat(e.target.value)}
+                        className="px-3 py-2 border border-gray-300 rounded text-sm bg-white"
+                      >
+                        <option value="HEX">Hex</option>
+                        <option value="UTF8">UTF8</option>
+                        <option value="LATIN1">Latin1</option>
+                        <option value="BASE64">Base64</option>
                       </select>
                       <div className="flex-1 relative flex items-center space-x-2">
                         <input
                           type="text"
                           value={customIV}
                           onChange={(e) => setCustomIV(e.target.value)}
-                          placeholder={selectedAlgorithm === 'SALSA20' ? 'Enter 8-byte nonce...' : selectedAlgorithm === 'CHACHA20' ? 'Enter 12-byte nonce...' : 'Enter initialization vector...'}
+                          placeholder={
+                            selectedAlgorithm === 'SALSA20'
+                              ? `Enter 8-byte nonce (${ivFormat})...`
+                              : selectedAlgorithm === 'CHACHA20'
+                                ? `Enter 12-byte nonce (${ivFormat})...`
+                                : `Enter initialization vector (${ivFormat})...`
+                          }
                           className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                         />
                         <button
@@ -730,55 +1205,57 @@ const CryptoLabPage = () => {
                 )}
                 
                 {/* Mode/Input/Output Options */}
-                <div className="grid grid-cols-3 gap-2">
-                  <div className="bg-white border border-gray-200 rounded p-2">
-                    <div className="text-xs text-gray-500 mb-1">Mode</div>
-                    {selectedAlgorithm === 'SALSA20' || selectedAlgorithm === 'CHACHA20' ? (
-                      <div className="w-full text-sm font-medium text-gray-900 bg-transparent border-none">
-                        STREAM
-                      </div>
-                    ) : (
-                      <select
-                        value={selectedMode}
-                        onChange={(e) => setSelectedMode(e.target.value)}
+                {selectedAlgorithm !== 'RAILFENCE' && selectedAlgorithm !== 'MORSE' && (
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="bg-white border border-gray-200 rounded p-2">
+                      <div className="text-xs text-gray-500 mb-1">Mode</div>
+                      {selectedAlgorithm === 'SALSA20' || selectedAlgorithm === 'CHACHA20' ? (
+                        <div className="w-full text-sm font-medium text-gray-900 bg-transparent border-none">
+                          STREAM
+                        </div>
+                      ) : (
+                        <select
+                          value={selectedMode}
+                          onChange={(e) => setSelectedMode(e.target.value)}
+                          className="w-full text-sm font-medium text-gray-900 bg-transparent border-none focus:outline-none focus:ring-0"
+                        >
+                          <option value="CBC">CBC</option>
+                          {selectedAlgorithm !== 'RC2' && <option value="CFB">CFB</option>}
+                          {selectedAlgorithm !== 'RC2' && <option value="OFB">OFB</option>}
+                          {(selectedAlgorithm === 'AES' || selectedAlgorithm === 'SM4') && (
+                            <>
+                              <option value="CTR">CTR</option>
+                              <option value="GCM">GCM</option>
+                            </>
+                          )}
+                          <option value="ECB">ECB</option>
+                        </select>
+                      )}
+                    </div>
+                    <div className="bg-white border border-gray-200 rounded p-2">
+                      <div className="text-xs text-gray-500 mb-1">Input</div>
+                      <select 
+                        value={inputFormat}
+                        onChange={(e) => setInputFormat(e.target.value)}
                         className="w-full text-sm font-medium text-gray-900 bg-transparent border-none focus:outline-none focus:ring-0"
                       >
-                        <option value="CBC">CBC</option>
-                        {selectedAlgorithm !== 'RC2' && <option value="CFB">CFB</option>}
-                        {selectedAlgorithm !== 'RC2' && <option value="OFB">OFB</option>}
-                        {(selectedAlgorithm === 'AES' || selectedAlgorithm === 'SM4') && (
-                          <>
-                            <option value="CTR">CTR</option>
-                            <option value="GCM">GCM</option>
-                          </>
-                        )}
-                        <option value="ECB">ECB</option>
+                        <option value="RAW">RAW</option>
+                        <option value="HEX">HEX</option>
                       </select>
-                    )}
-                  </div>
+                    </div>
                   <div className="bg-white border border-gray-200 rounded p-2">
-                    <div className="text-xs text-gray-500 mb-1">Input</div>
+                    <div className="text-xs text-gray-500 mb-1">Output</div>
                     <select 
-                      value={inputFormat}
-                      onChange={(e) => setInputFormat(e.target.value)}
-                      className="w-full text-sm font-medium text-gray-900 bg-transparent border-none focus:outline-none focus:ring-0"
-                    >
-                      <option value="RAW">RAW</option>
-                      <option value="HEX">HEX</option>
+                      value={outputFormat}
+                      onChange={(e) => setOutputFormat(e.target.value)}
+                        className="w-full text-sm font-medium text-gray-900 bg-transparent border-none focus:outline-none focus:ring-0"
+                      >
+                        <option value="HEX">HEX</option>
+                        <option value="RAW">RAW</option>
                     </select>
                   </div>
-                <div className="bg-white border border-gray-200 rounded p-2">
-                  <div className="text-xs text-gray-500 mb-1">Output</div>
-                  <select 
-                    value={outputFormat}
-                    onChange={(e) => setOutputFormat(e.target.value)}
-                      className="w-full text-sm font-medium text-gray-900 bg-transparent border-none focus:outline-none focus:ring-0"
-                    >
-                      <option value="HEX">HEX</option>
-                      <option value="RAW">RAW</option>
-                  </select>
-                </div>
-              </div>
+                  </div>
+                )}
 
               {(selectedAlgorithm === 'SALSA20' || selectedAlgorithm === 'CHACHA20') && (
                 <div className="grid grid-cols-2 gap-2 mt-2">
@@ -844,6 +1321,64 @@ const CryptoLabPage = () => {
                     operation === 'encrypt' ? 'Encrypt' : 'Decrypt'
                   )}
                 </button>
+              </div>
+            )}
+
+            {showRailFenceVisualization && (
+              <div className="mt-4 rounded-xl border border-emerald-100 bg-gradient-to-br from-emerald-50 via-white to-emerald-50 p-4 shadow-sm">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-xs font-semibold text-emerald-700 uppercase tracking-[0.2em]">ZIGZAG PATTERN</div>
+                  <div className="flex items-center space-x-2 text-[11px] text-emerald-700/80">
+                    <span>rails: {railFenceRails || '—'}</span>
+                    <span className="text-emerald-200">|</span>
+                    <span>offset: {railFenceOffset}</span>
+                    <button
+                      onClick={async (event) => {
+                        if (!railFenceZigzag) {
+                          alert('No zigzag pattern available to copy.');
+                          return;
+                        }
+                        await copyToClipboard(railFenceZigzag);
+                        const button = event.target.closest('button');
+                        const originalTitle = button.title;
+                        button.title = 'Copied!';
+                        setTimeout(() => {
+                          button.title = originalTitle;
+                        }, 1000);
+                      }}
+                      className="p-1 text-emerald-600 hover:text-emerald-800"
+                      title="Copy Zigzag Pattern"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div className="overflow-auto rounded-lg border border-emerald-100 bg-white/70 p-3">
+                  <div
+                    className="grid gap-1 justify-start"
+                    style={{ gridTemplateColumns: `repeat(${railFenceGrid[0]?.length || 0}, 24px)` }}
+                  >
+                    {railFenceGrid.flatMap((row, rowIndex) => (
+                      row.map((cell, colIndex) => {
+                        const isPlaceholder = cell === '.';
+                        return (
+                          <div
+                            key={`rail-cell-${rowIndex}-${colIndex}`}
+                            className={`h-6 w-6 rounded border text-xs font-mono flex items-center justify-center ${
+                              isPlaceholder
+                                ? 'border-emerald-50 text-emerald-200 bg-emerald-50/30'
+                                : 'border-emerald-200 text-emerald-900 bg-white'
+                            }`}
+                          >
+                            {cell}
+                          </div>
+                        );
+                      })
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
 
@@ -1168,9 +1703,11 @@ const CryptoLabPage = () => {
             </div>
             <div className="flex-1 p-4 overflow-auto min-h-0">
               {result ? (
-                <pre className="w-full h-full text-sm font-mono overflow-auto border-0 focus:outline-none">
-                  {result.output}
-                </pre>
+                <div className="flex flex-col gap-4">
+                  <pre className="w-full text-sm font-mono overflow-auto border-0 focus:outline-none">
+                    {result.output}
+                  </pre>
+                </div>
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-gray-400">
                   <span className="text-sm">Output will appear here...</span>

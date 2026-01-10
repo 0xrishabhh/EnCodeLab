@@ -1,8 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import os
 import base64
-import binascii
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
@@ -11,9 +9,9 @@ import gmalg  # SM4 support from gmalg
 import secrets
 import logging
 import time
-import psutil
 import gc
 import sys
+import re
 from collections import defaultdict
 import struct
 
@@ -23,6 +21,18 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for frontend communication
+
+# Shared constants to avoid repeated list allocations and speed up membership checks
+SUPPORTED_ALGORITHMS = ('AES', '3DES', 'BLOWFISH', 'RC2', 'SM4', 'SALSA20', 'CHACHA20', 'RAILFENCE', 'MORSE')
+SUPPORTED_ALGORITHM_SET = set(SUPPORTED_ALGORITHMS)
+BLOCK_MODES = ('CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB')
+BLOCK_MODE_SET = set(BLOCK_MODES)
+STREAM_CIPHERS = {'SALSA20', 'CHACHA20'}
+STREAM_MODES = {'STREAM', 'SALSA20'}
+RAILFENCE_MODE_SET = {'RAILFENCE', 'NONE'}
+MORSE_MODE_SET = {'MORSE', 'NONE'}
+SUPPORTED_ENCODINGS = ('HEX', 'RAW')
+SUPPORTED_ENCODING_SET = set(SUPPORTED_ENCODINGS)
 
 # Global storage for algorithm performances (for ranking-based scoring)
 algorithm_performances = defaultdict(list)
@@ -71,6 +81,28 @@ class CryptoService:
     CHACHA20_KEY_SIZE = 32           # 256-bit key only
     CHACHA20_NONCE_SIZE = 12         # 96-bit nonce (IETF variant)
     CHACHA20_ALLOWED_ROUNDS = [8, 12, 20]  # Support reduced rounds for parity with Salsa controls
+
+    # Rail Fence cipher configurations
+    RAILFENCE_MIN_RAILS = 2
+    RAILFENCE_MAX_RAILS = 64
+
+    # Morse code mappings (ITU standard)
+    MORSE_CODE_MAP = {
+        'A': '.-', 'B': '-...', 'C': '-.-.', 'D': '-..', 'E': '.',
+        'F': '..-.', 'G': '--.', 'H': '....', 'I': '..', 'J': '.---',
+        'K': '-.-', 'L': '.-..', 'M': '--', 'N': '-.', 'O': '---',
+        'P': '.--.', 'Q': '--.-', 'R': '.-.', 'S': '...', 'T': '-',
+        'U': '..-', 'V': '...-', 'W': '.--', 'X': '-..-', 'Y': '-.--',
+        'Z': '--..',
+        '0': '-----', '1': '.----', '2': '..---', '3': '...--', '4': '....-',
+        '5': '.....', '6': '-....', '7': '--...', '8': '---..', '9': '----.',
+        '.': '.-.-.-', ',': '--..--', '?': '..--..', "'": '.----.',
+        '!': '-.-.--', '/': '-..-.', '(': '-.--.', ')': '-.--.-',
+        '&': '.-...', ':': '---...', ';': '-.-.-.', '=': '-...-',
+        '+': '.-.-.', '-': '-....-', '_': '..--.-', '"': '.-..-.',
+        '$': '...-..-', '@': '.--.-.'
+    }
+    MORSE_REVERSE_MAP = {v: k for k, v in MORSE_CODE_MAP.items()}
 
     @staticmethod
     def _rotl32(value, shift):
@@ -214,96 +246,370 @@ class CryptoService:
         return bytes(keystream[:length])
 
     @staticmethod
-    def validate_key(key_data, algorithm='AES', required_size=None):
+    def parse_railfence_rails(value, default=None):
+        """Parse and validate Rail Fence rails count."""
+        if value is None or value == '':
+            if default is None:
+                raise ValueError("Rail Fence rails are required.")
+            rails = default
+        else:
+            try:
+                rails = int(value)
+            except (TypeError, ValueError):
+                raise ValueError("Rail Fence rails must be an integer.")
+
+        if rails < CryptoService.RAILFENCE_MIN_RAILS or rails > CryptoService.RAILFENCE_MAX_RAILS:
+            raise ValueError(
+                f"Rail Fence rails must be between {CryptoService.RAILFENCE_MIN_RAILS} and {CryptoService.RAILFENCE_MAX_RAILS}."
+            )
+        return rails
+
+    @staticmethod
+    def parse_railfence_offset(value, default=0):
+        """Parse and validate Rail Fence offset."""
+        if value is None or value == '':
+            return default
+        try:
+            offset = int(value)
+        except (TypeError, ValueError):
+            raise ValueError("Rail Fence offset must be an integer.")
+        if offset < 0:
+            raise ValueError("Rail Fence offset must be a non-negative integer.")
+        return offset
+
+    @staticmethod
+    def _rail_fence_pattern(rails):
+        if rails <= 1:
+            return [0]
+        return list(range(rails)) + list(range(rails - 2, 0, -1))
+
+    @staticmethod
+    def _rail_fence_indices(length, rails, offset=0):
+        if rails <= 1:
+            return [0] * length
+        pattern = CryptoService._rail_fence_pattern(rails)
+        cycle = len(pattern)
+        start = offset % cycle
+        return [pattern[(start + i) % cycle] for i in range(length)]
+
+    @staticmethod
+    def _validate_railfence_length(length, rails):
+        if length == 0:
+            raise ValueError("Rail Fence input cannot be empty.")
+        if rails >= length:
+            raise ValueError("Rail Fence rails must be smaller than input length.")
+
+    @staticmethod
+    def rail_fence_encrypt(data_bytes, rails, offset=0):
+        """Encrypt bytes using the Rail Fence transposition cipher."""
+        length = len(data_bytes)
+        CryptoService._validate_railfence_length(length, rails)
+        if rails <= 1 or length <= 1:
+            return data_bytes
+
+        rails_data = [bytearray() for _ in range(rails)]
+        indices = CryptoService._rail_fence_indices(length, rails, offset)
+        for idx, b in enumerate(data_bytes):
+            rails_data[indices[idx]].append(b)
+
+        return b"".join(rails_data)
+
+    @staticmethod
+    def rail_fence_decrypt(data_bytes, rails, offset=0):
+        """Decrypt bytes using the Rail Fence transposition cipher."""
+        length = len(data_bytes)
+        CryptoService._validate_railfence_length(length, rails)
+        if rails <= 1 or length <= 1:
+            return data_bytes
+
+        indices = CryptoService._rail_fence_indices(length, rails, offset)
+        counts = [0] * rails
+        for row in indices:
+            counts[row] += 1
+
+        rails_slices = []
+        cursor = 0
+        for count in counts:
+            rails_slices.append(memoryview(data_bytes[cursor:cursor + count]))
+            cursor += count
+
+        positions = [0] * rails
+        plaintext = bytearray(length)
+        for i, row in enumerate(indices):
+            plaintext[i] = rails_slices[row][positions[row]]
+            positions[row] += 1
+
+        return bytes(plaintext)
+
+    @staticmethod
+    def _normalize_morse_symbols(dot_symbol, dash_symbol):
+        dot_symbol = '.' if dot_symbol is None else str(dot_symbol)
+        dash_symbol = '-' if dash_symbol is None else str(dash_symbol)
+        if dot_symbol == '' or dash_symbol == '':
+            raise ValueError("Morse dot/dash symbols cannot be empty.")
+        if dot_symbol == dash_symbol:
+            raise ValueError("Morse dot and dash symbols must be different.")
+        return dot_symbol, dash_symbol
+
+    @staticmethod
+    def _morse_case_sequence(text):
+        if not text:
+            return ''
+        return ''.join('U' if ch.isupper() else 'L' if ch.islower() else '' for ch in text)
+
+    @staticmethod
+    def _apply_morse_case_sequence(text, case_sequence):
+        if not text or not case_sequence:
+            return text
+        seq_index = 0
+        result = []
+        for ch in text:
+            if ch.isalpha():
+                if seq_index < len(case_sequence):
+                    result.append(ch.lower() if case_sequence[seq_index] == 'L' else ch.upper())
+                    seq_index += 1
+                else:
+                    result.append(ch)
+            else:
+                result.append(ch)
+        return ''.join(result)
+
+    @staticmethod
+    def _morse_symbol_to_standard(symbol, dot_symbol, dash_symbol):
+        if symbol == '':
+            raise ValueError("Unsupported Morse sequence: (empty)")
+        tokens = [(dot_symbol, '.'), (dash_symbol, '-')]
+        tokens.sort(key=lambda item: len(item[0]), reverse=True)
+        index = 0
+        standard = []
+        while index < len(symbol):
+            matched = False
+            for token, replacement in tokens:
+                if symbol.startswith(token, index):
+                    standard.append(replacement)
+                    index += len(token)
+                    matched = True
+                    break
+            if not matched:
+                raise ValueError(f"Unsupported Morse sequence: {symbol}")
+        return ''.join(standard)
+
+    @staticmethod
+    def morse_encrypt(text, letter_delimiter=' ', word_delimiter='\n', dot_symbol='.', dash_symbol='-'):
+        if text is None:
+            return ''
+        if letter_delimiter is None or word_delimiter is None:
+            raise ValueError("Morse delimiters cannot be empty.")
+        if letter_delimiter == '' or word_delimiter == '':
+            raise ValueError("Morse delimiters cannot be empty.")
+
+        dot_symbol, dash_symbol = CryptoService._normalize_morse_symbols(dot_symbol, dash_symbol)
+        stripped = text.strip()
+        if not stripped:
+            return ''
+
+        words = re.split(r'\s+', stripped)
+        encoded_words = []
+        for word in words:
+            letters = []
+            for ch in word:
+                code = CryptoService.MORSE_CODE_MAP.get(ch.upper())
+                if not code:
+                    raise ValueError(f"Unsupported character for Morse: {ch}")
+                custom = ''.join(dot_symbol if c == '.' else dash_symbol for c in code)
+                letters.append(custom)
+            encoded_words.append(letter_delimiter.join(letters))
+
+        return word_delimiter.join(encoded_words)
+
+    @staticmethod
+    def morse_decrypt(morse_text, letter_delimiter=' ', word_delimiter='\n', dot_symbol='.', dash_symbol='-'):
+        if morse_text is None:
+            return ''
+        if letter_delimiter is None or word_delimiter is None:
+            raise ValueError("Morse delimiters cannot be empty.")
+        if letter_delimiter == '' or word_delimiter == '':
+            raise ValueError("Morse delimiters cannot be empty.")
+
+        dot_symbol, dash_symbol = CryptoService._normalize_morse_symbols(dot_symbol, dash_symbol)
+        stripped = morse_text.strip()
+        if not stripped:
+            return ''
+
+        if word_delimiter == '\n':
+            words = [w for w in stripped.splitlines() if w.strip() != '']
+        else:
+            words = [w for w in stripped.split(word_delimiter) if w.strip() != '']
+
+        decoded_words = []
+        for word in words:
+            if letter_delimiter.isspace():
+                symbols = [s for s in word.split() if s]
+            else:
+                symbols = [s for s in word.split(letter_delimiter) if s]
+            letters = []
+            for symbol in symbols:
+                standard = CryptoService._morse_symbol_to_standard(symbol, dot_symbol, dash_symbol)
+                decoded = CryptoService.MORSE_REVERSE_MAP.get(standard)
+                if not decoded:
+                    raise ValueError(f"Unsupported Morse sequence: {symbol}")
+                letters.append(decoded)
+            decoded_words.append(''.join(letters))
+
+        return ' '.join(decoded_words)
+
+    @staticmethod
+    def _normalize_key_format(value, default='AUTO'):
+        if value is None or value == '':
+            return default
+        normalized = str(value).strip().upper().replace('-', '')
+        if normalized == 'UTF8' or normalized == 'UTF-8':
+            return 'UTF8'
+        if normalized == 'LATIN1' or normalized == 'LATIN-1':
+            return 'LATIN1'
+        if normalized == 'BASE64' or normalized == 'B64':
+            return 'BASE64'
+        if normalized == 'HEX':
+            return 'HEX'
+        return normalized
+
+    @staticmethod
+    def decode_key_material(value, key_format='HEX', label='Key'):
+        if value is None or value == '':
+            return None
+        fmt = CryptoService._normalize_key_format(key_format)
+        raw_value = value.decode('latin-1') if isinstance(value, (bytes, bytearray)) else str(value)
+        if fmt in ('HEX', 'AUTO'):
+            normalized = re.sub(r'\s+', '', raw_value.strip())
+            if normalized.lower().startswith('0x'):
+                normalized = normalized[2:]
+            is_hex = len(normalized) % 2 == 0 and re.fullmatch(r'[0-9a-fA-F]*', normalized or '') is not None
+            if fmt == 'HEX' or is_hex:
+                if len(normalized) % 2 != 0:
+                    raise ValueError(f"{label} HEX must have an even length.")
+                try:
+                    return bytes.fromhex(normalized)
+                except ValueError as exc:
+                    raise ValueError(f"{label} HEX contains invalid characters.") from exc
+            if fmt == 'AUTO':
+                return raw_value.encode('utf-8')
+        if fmt == 'UTF8':
+            return raw_value.encode('utf-8')
+        if fmt == 'LATIN1':
+            try:
+                return raw_value.encode('latin-1')
+            except UnicodeEncodeError as exc:
+                raise ValueError(f"{label} Latin1 must use characters in the 0-255 range.") from exc
+        if fmt == 'BASE64':
+            try:
+                sanitized = re.sub(r'\s+', '', raw_value)
+                if len(sanitized) % 4 != 0:
+                    sanitized += '=' * (-len(sanitized) % 4)
+                return base64.b64decode(sanitized, validate=True)
+            except Exception as exc:
+                raise ValueError(f"{label} Base64 is invalid.") from exc
+        raise ValueError(f"Unsupported {label} format: {key_format}")
+
+    @staticmethod
+    def encode_key_material(value_bytes, key_format='HEX', label='Key'):
+        if value_bytes is None:
+            return ''
+        fmt = CryptoService._normalize_key_format(key_format)
+        if fmt == 'AUTO' or fmt == 'HEX':
+            return value_bytes.hex()
+        if fmt == 'BASE64':
+            return base64.b64encode(value_bytes).decode('ascii')
+        if fmt == 'LATIN1':
+            return value_bytes.decode('latin-1')
+        if fmt == 'UTF8':
+            try:
+                return value_bytes.decode('utf-8')
+            except UnicodeDecodeError as exc:
+                raise ValueError(f"{label} cannot be encoded as UTF8.") from exc
+        raise ValueError(f"Unsupported {label} format: {key_format}")
+
+    @staticmethod
+    def _random_bytes_for_format(length, key_format='HEX'):
+        fmt = CryptoService._normalize_key_format(key_format)
+        if fmt == 'UTF8':
+            alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+            return ''.join(secrets.choice(alphabet) for _ in range(length)).encode('utf-8')
+        return secrets.token_bytes(length)
+
+    @staticmethod
+    def validate_key(key_data, algorithm='AES', required_size=None, key_format='HEX'):
         """Validate and return key bytes"""
         if not key_data:
             return None
-            
-        try:
-            # Try to decode key if it's in hex format
-            if len(key_data) % 2 == 0:
-                try:
-                    key_bytes = bytes.fromhex(key_data)
-                except ValueError:
-                    key_bytes = key_data.encode('utf-8')
-            else:
-                key_bytes = key_data.encode('utf-8')
-            
-            if required_size and len(key_bytes) != required_size:
-                return None
-            
-            # Validate key size based on algorithm
-            if algorithm.upper() == 'AES':
-                valid_sizes = CryptoService.AES_VALID_KEY_SIZES
-                if len(key_bytes) not in valid_sizes:
-                    return None
-            elif algorithm.upper() == '3DES':
-                valid_sizes = CryptoService.TRIPLE_DES_VALID_KEY_SIZES
-                if len(key_bytes) not in valid_sizes:
-                    return None
-            elif algorithm.upper() == 'BLOWFISH':
-                # Blowfish supports variable key lengths from 4 to 56 bytes
-                if not (CryptoService.BLOWFISH_MIN_KEY_SIZE <= len(key_bytes) <= CryptoService.BLOWFISH_MAX_KEY_SIZE):
-                    return None
-            elif algorithm.upper() == 'RC2':
-                # RC2 supports variable key lengths from 1 to 128 bytes
-                if not (CryptoService.RC2_MIN_KEY_SIZE <= len(key_bytes) <= CryptoService.RC2_MAX_KEY_SIZE):
-                    return None
-            elif algorithm.upper() == 'SM4':
-                # SM4 requires exactly 128-bit (16 bytes) key
-                if len(key_bytes) != CryptoService.SM4_KEY_SIZE:
-                    return None
-            elif algorithm.upper() == 'SALSA20':
-                # Salsa20 supports 128-bit or 256-bit keys
-                if len(key_bytes) not in CryptoService.SALSA20_KEY_SIZES:
-                    return None
-            elif algorithm.upper() == 'CHACHA20':
-                # ChaCha20 supports only 256-bit key
-                if len(key_bytes) != CryptoService.CHACHA20_KEY_SIZE:
-                    return None
-            else:
-                return None
-                
-            return key_bytes
-        except Exception:
+        algorithm_upper = algorithm.upper()
+        key_bytes = CryptoService.decode_key_material(key_data, key_format, 'Key')
+        if required_size and len(key_bytes) != required_size:
             return None
+        if algorithm_upper == 'AES':
+            valid_sizes = CryptoService.AES_VALID_KEY_SIZES
+            if len(key_bytes) not in valid_sizes:
+                return None
+        elif algorithm_upper == '3DES':
+            valid_sizes = CryptoService.TRIPLE_DES_VALID_KEY_SIZES
+            if len(key_bytes) not in valid_sizes:
+                return None
+        elif algorithm_upper == 'BLOWFISH':
+            if not (CryptoService.BLOWFISH_MIN_KEY_SIZE <= len(key_bytes) <= CryptoService.BLOWFISH_MAX_KEY_SIZE):
+                return None
+        elif algorithm_upper == 'RC2':
+            if not (CryptoService.RC2_MIN_KEY_SIZE <= len(key_bytes) <= CryptoService.RC2_MAX_KEY_SIZE):
+                return None
+        elif algorithm_upper == 'SM4':
+            if len(key_bytes) != CryptoService.SM4_KEY_SIZE:
+                return None
+        elif algorithm_upper == 'SALSA20':
+            if len(key_bytes) not in CryptoService.SALSA20_KEY_SIZES:
+                return None
+        elif algorithm_upper == 'CHACHA20':
+            if len(key_bytes) != CryptoService.CHACHA20_KEY_SIZE:
+                return None
+        else:
+            return None
+        return key_bytes
     
     @staticmethod
-    def generate_random_key(algorithm='AES', size=None):
+    def generate_random_key(algorithm='AES', size=None, key_format='HEX'):
         """Generate a secure random key for the specified algorithm"""
-        if algorithm.upper() == 'AES':
+        algorithm_upper = algorithm.upper()
+        if algorithm_upper == 'AES':
             if size is None or size not in CryptoService.AES_VALID_KEY_SIZES:
                 size = 32  # Default to AES-256
-        elif algorithm.upper() == '3DES':
+        elif algorithm_upper == '3DES':
             size = 24  # Default to 24 bytes for TripleDES
-        elif algorithm.upper() == 'BLOWFISH':
+        elif algorithm_upper == 'BLOWFISH':
             if size is None or not (CryptoService.BLOWFISH_MIN_KEY_SIZE <= size <= CryptoService.BLOWFISH_MAX_KEY_SIZE):
                 size = 16  # Default to 16 bytes (128 bits) for Blowfish - common usage
-        elif algorithm.upper() == 'RC2':
+        elif algorithm_upper == 'RC2':
             if size is None or not (CryptoService.RC2_MIN_KEY_SIZE <= size <= CryptoService.RC2_MAX_KEY_SIZE):
                 size = 16  # Default to 16 bytes (128 bits) for RC2 - common usage
-        elif algorithm.upper() == 'SM4':
+        elif algorithm_upper == 'SM4':
             size = 16  # SM4 requires exactly 16 bytes (128 bits)
-        elif algorithm.upper() == 'SALSA20':
+        elif algorithm_upper == 'SALSA20':
             if size is None or size not in CryptoService.SALSA20_KEY_SIZES:
                 size = 32  # Default to 256-bit Salsa20 key
-        elif algorithm.upper() == 'CHACHA20':
+        elif algorithm_upper == 'CHACHA20':
             size = CryptoService.CHACHA20_KEY_SIZE
         else:
             size = 32  # Default fallback
-        return secrets.token_bytes(size)
+        return CryptoService._random_bytes_for_format(size, key_format)
     
     @staticmethod
     def decode_input(data, encoding):
         """Decode input data based on encoding type"""
         try:
-            if encoding.upper() == 'HEX':
+            encoding_upper = encoding.upper()
+            if encoding_upper == 'HEX':
                 return bytes.fromhex(data)
-            elif encoding.upper() == 'BASE64':
+            elif encoding_upper == 'BASE64':
                 return base64.b64decode(data)
-            elif encoding.upper() == 'UTF-8':
+            elif encoding_upper == 'UTF-8':
                 return data.encode('utf-8')
-            elif encoding.upper() == 'RAW':
+            elif encoding_upper == 'RAW':
                 # For RAW format, treat as raw bytes
                 if isinstance(data, str):
                     return data.encode('latin-1')  # Use latin-1 to preserve all byte values
@@ -317,18 +623,19 @@ class CryptoService:
     def encode_output(data, encoding):
         """Encode output data based on encoding type"""
         try:
-            if encoding.upper() == 'HEX':
+            encoding_upper = encoding.upper()
+            if encoding_upper == 'HEX':
                 return data.hex()
-            elif encoding.upper() == 'BASE64':
+            elif encoding_upper == 'BASE64':
                 return base64.b64encode(data).decode('utf-8')
-            elif encoding.upper() == 'UTF-8':
+            elif encoding_upper == 'UTF-8':
                 try:
                     return data.decode('utf-8')
                 except UnicodeDecodeError:
                     # If UTF-8 decoding fails (e.g., for encrypted binary data), 
                     # fall back to HEX encoding
                     return data.hex()
-            elif encoding.upper() == 'RAW':
+            elif encoding_upper == 'RAW':
                 # For RAW format, return as raw bytes string
                 if isinstance(data, bytes):
                     return data.decode('latin-1')  # Use latin-1 to preserve all byte values
@@ -339,22 +646,42 @@ class CryptoService:
             raise ValueError(f"Failed to encode data with {encoding}: {str(e)}")
     
     @staticmethod
-    def encrypt_data(algorithm, mode, data_bytes, key, encoding, iv_or_nonce=None, rounds=None, counter=0):
+    def encrypt_data(
+        algorithm,
+        mode,
+        data_bytes,
+        key,
+        encoding,
+        iv_or_nonce=None,
+        rounds=None,
+        counter=0,
+        offset=0,
+        morse_letter_delimiter=' ',
+        morse_word_delimiter='\n',
+        morse_dot_symbol='.',
+        morse_dash_symbol='-'
+    ):
         """Encrypt data using various algorithms and modes"""
         try:
             algorithm_upper = algorithm.upper()
-            mode_upper = mode.upper() if mode else 'STREAM'
+            mode_upper = mode.upper() if mode else ('RAILFENCE' if algorithm_upper == 'RAILFENCE' else 'STREAM')
 
             # Validate algorithm
-            if algorithm_upper not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4', 'SALSA20', 'CHACHA20']:
-                raise ValueError(f"Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, SM4, Salsa20, and ChaCha20 are supported.")
+            if algorithm_upper not in SUPPORTED_ALGORITHM_SET:
+                raise ValueError(f"Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, SM4, Salsa20, ChaCha20, Rail Fence, and Morse are supported.")
             
             # Validate mode
-            if algorithm_upper in ['SALSA20', 'CHACHA20']:
-                if mode_upper not in ['STREAM', 'SALSA20']:
+            if algorithm_upper == 'MORSE':
+                if mode_upper not in MORSE_MODE_SET:
+                    raise ValueError(f"Morse uses MORSE mode only (got {mode}).")
+            elif algorithm_upper == 'RAILFENCE':
+                if mode_upper not in RAILFENCE_MODE_SET:
+                    raise ValueError(f"Rail Fence uses RAILFENCE mode only (got {mode}).")
+            elif algorithm_upper in STREAM_CIPHERS:
+                if mode_upper not in STREAM_MODES:
                     raise ValueError(f"{algorithm_upper} is a stream cipher and only supports STREAM mode (got {mode}).")
             else:
-                if mode_upper not in ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB']:
+                if mode_upper not in BLOCK_MODE_SET:
                     raise ValueError(f"Unsupported mode: {mode}. Only CBC, CFB, OFB, CTR, GCM, and ECB modes are supported.")
             
             # Validate algorithm-mode combinations
@@ -367,6 +694,41 @@ class CryptoService:
 
             
             tag = None
+            if algorithm_upper == 'MORSE':
+                text = data_bytes.decode('latin-1') if isinstance(data_bytes, (bytes, bytearray)) else str(data_bytes)
+                case_sequence = CryptoService._morse_case_sequence(text)
+                ciphertext = CryptoService.morse_encrypt(
+                    text,
+                    letter_delimiter=morse_letter_delimiter,
+                    word_delimiter=morse_word_delimiter,
+                    dot_symbol=morse_dot_symbol,
+                    dash_symbol=morse_dash_symbol
+                )
+                result = {
+                    'ciphertext': ciphertext,
+                    'key': '',
+                    'algorithm': 'MORSE',
+                    'mode': 'MORSE',
+                    'letter_delimiter': morse_letter_delimiter,
+                    'word_delimiter': morse_word_delimiter,
+                    'dot_symbol': morse_dot_symbol,
+                    'dash_symbol': morse_dash_symbol,
+                    'case_sequence': case_sequence
+                }
+                return result
+            if algorithm_upper == 'RAILFENCE':
+                rails = CryptoService.parse_railfence_rails(key)
+                offset_value = CryptoService.parse_railfence_offset(offset)
+                sanitized_data = data_bytes.replace(b'\r', b'').replace(b'\n', b'')
+                ciphertext = CryptoService.rail_fence_encrypt(sanitized_data, rails, offset_value)
+                result = {
+                    'ciphertext': CryptoService.encode_output(ciphertext, encoding),
+                    'key': str(rails),
+                    'offset': offset_value,
+                    'algorithm': 'RAILFENCE',
+                    'mode': 'RAILFENCE'
+                }
+                return result
             if algorithm_upper == 'SALSA20':
                 # Salsa20 stream cipher - uses key, nonce, optional counter, and rounds
                 if len(key) not in CryptoService.SALSA20_KEY_SIZES:
@@ -429,9 +791,9 @@ class CryptoService:
                 block_size = CryptoService.SM4_BLOCK_SIZE
 
             
-            if algorithm.upper() == 'AES':
+            if algorithm_upper == 'AES':
                 # AES encryption
-                if mode.upper() == 'ECB':
+                if mode_upper == 'ECB':
                     # ECB mode doesn't use IV
                     cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())
                     # Pad data for ECB mode
@@ -440,7 +802,7 @@ class CryptoService:
                     encryptor = cipher.encryptor()
                     ciphertext = encryptor.update(padded_data) + encryptor.finalize()
                     
-                elif mode.upper() == 'CBC':
+                elif mode_upper == 'CBC':
                     # Generate IV if not provided
                     if not iv_or_nonce:
                         iv_or_nonce = secrets.token_bytes(block_size)
@@ -451,7 +813,7 @@ class CryptoService:
                     encryptor = cipher.encryptor()
                     ciphertext = encryptor.update(padded_data) + encryptor.finalize()
                     
-                elif mode.upper() == 'CFB':
+                elif mode_upper == 'CFB':
                     # Generate IV if not provided
                     if not iv_or_nonce:
                         iv_or_nonce = secrets.token_bytes(block_size)
@@ -460,7 +822,7 @@ class CryptoService:
                     encryptor = cipher.encryptor()
                     ciphertext = encryptor.update(data_bytes) + encryptor.finalize()
                     
-                elif mode.upper() == 'OFB':
+                elif mode_upper == 'OFB':
                     # Generate IV if not provided
                     if not iv_or_nonce:
                         iv_or_nonce = secrets.token_bytes(block_size)
@@ -469,7 +831,7 @@ class CryptoService:
                     encryptor = cipher.encryptor()
                     ciphertext = encryptor.update(data_bytes) + encryptor.finalize()
                     
-                elif mode.upper() == 'CTR':
+                elif mode_upper == 'CTR':
                     # Generate nonce if not provided
                     if not iv_or_nonce:
                         iv_or_nonce = secrets.token_bytes(block_size)
@@ -478,7 +840,7 @@ class CryptoService:
                     encryptor = cipher.encryptor()
                     ciphertext = encryptor.update(data_bytes) + encryptor.finalize()
                     
-                elif mode.upper() == 'GCM':
+                elif mode_upper == 'GCM':
                     # Generate nonce if not provided (GCM typically uses 96-bit nonce)
                     if not iv_or_nonce:
                         iv_or_nonce = secrets.token_bytes(12)
@@ -489,12 +851,12 @@ class CryptoService:
                     # Get the authentication tag
                     tag = encryptor.tag
             
-            elif algorithm.upper() == '3DES':
+            elif algorithm_upper == '3DES':
                 # TripleDES encryption
                 # The key should already be 16 or 24 bytes from the validation
                 triple_des_key = key
                 
-                if mode.upper() == 'ECB':
+                if mode_upper == 'ECB':
                     # ECB mode doesn't use IV
                     cipher = Cipher(algorithms.TripleDES(triple_des_key), modes.ECB(), backend=default_backend())
                     # Pad data for ECB mode
@@ -503,7 +865,7 @@ class CryptoService:
                     encryptor = cipher.encryptor()
                     ciphertext = encryptor.update(padded_data) + encryptor.finalize()
                     
-                elif mode.upper() == 'CBC':
+                elif mode_upper == 'CBC':
                     # Generate IV if not provided
                     if not iv_or_nonce:
                         iv_or_nonce = secrets.token_bytes(block_size)
@@ -514,7 +876,7 @@ class CryptoService:
                     encryptor = cipher.encryptor()
                     ciphertext = encryptor.update(padded_data) + encryptor.finalize()
                     
-                elif mode.upper() == 'CFB':
+                elif mode_upper == 'CFB':
                     # Generate IV if not provided
                     if not iv_or_nonce:
                         iv_or_nonce = secrets.token_bytes(block_size)
@@ -523,7 +885,7 @@ class CryptoService:
                     encryptor = cipher.encryptor()
                     ciphertext = encryptor.update(data_bytes) + encryptor.finalize()
                     
-                elif mode.upper() == 'OFB':
+                elif mode_upper == 'OFB':
                     # Generate IV if not provided
                     if not iv_or_nonce:
                         iv_or_nonce = secrets.token_bytes(block_size)
@@ -532,9 +894,9 @@ class CryptoService:
                     encryptor = cipher.encryptor()
                     ciphertext = encryptor.update(data_bytes) + encryptor.finalize()
             
-            elif algorithm.upper() == 'BLOWFISH':
+            elif algorithm_upper == 'BLOWFISH':
                 # Blowfish encryption
-                if mode.upper() == 'ECB':
+                if mode_upper == 'ECB':
                     # ECB mode doesn't use IV
                     cipher = Cipher(algorithms.Blowfish(key), modes.ECB(), backend=default_backend())
                     # Pad data for ECB mode
@@ -543,7 +905,7 @@ class CryptoService:
                     encryptor = cipher.encryptor()
                     ciphertext = encryptor.update(padded_data) + encryptor.finalize()
                     
-                elif mode.upper() == 'CBC':
+                elif mode_upper == 'CBC':
                     # Generate IV if not provided
                     if not iv_or_nonce:
                         iv_or_nonce = secrets.token_bytes(block_size)
@@ -554,7 +916,7 @@ class CryptoService:
                     encryptor = cipher.encryptor()
                     ciphertext = encryptor.update(padded_data) + encryptor.finalize()
                     
-                elif mode.upper() == 'CFB':
+                elif mode_upper == 'CFB':
                     # Generate IV if not provided
                     if not iv_or_nonce:
                         iv_or_nonce = secrets.token_bytes(block_size)
@@ -563,7 +925,7 @@ class CryptoService:
                     encryptor = cipher.encryptor()
                     ciphertext = encryptor.update(data_bytes) + encryptor.finalize()
                     
-                elif mode.upper() == 'OFB':
+                elif mode_upper == 'OFB':
                     # Generate IV if not provided
                     if not iv_or_nonce:
                         iv_or_nonce = secrets.token_bytes(block_size)
@@ -572,18 +934,18 @@ class CryptoService:
                     encryptor = cipher.encryptor()
                     ciphertext = encryptor.update(data_bytes) + encryptor.finalize()
             
-            elif algorithm.upper() == 'RC2':
+            elif algorithm_upper == 'RC2':
                 # RC2 encryption with 128-bit effective key length (common standard)
                 effective_keylen = 128  # Most online calculators use 128-bit effective key length
                 
-                if mode.upper() == 'ECB':
+                if mode_upper == 'ECB':
                     # ECB mode doesn't use IV - PKCS7 padding for both CBC and ECB
                     pad_len = block_size - (len(data_bytes) % block_size)
                     padded_data = data_bytes + bytes([pad_len] * pad_len)
                     cipher = ARC2.new(key, ARC2.MODE_ECB, effective_keylen=effective_keylen)
                     ciphertext = cipher.encrypt(padded_data)
                     
-                elif mode.upper() == 'CBC':
+                elif mode_upper == 'CBC':
                     # CBC mode requires IV - PKCS7 padding for both CBC and ECB
                     if not iv_or_nonce:
                         iv_or_nonce = secrets.token_bytes(block_size)
@@ -592,17 +954,17 @@ class CryptoService:
                     cipher = ARC2.new(key, ARC2.MODE_CBC, iv_or_nonce, effective_keylen=effective_keylen)
                     ciphertext = cipher.encrypt(padded_data)
 
-            elif algorithm.upper() == 'SM4':
+            elif algorithm_upper == 'SM4':
                 # SM4 encryption using gmalg library
                 sm4_cipher = gmalg.SM4(key)
                 
-                if mode.upper() == 'ECB':
+                if mode_upper == 'ECB':
                     # ECB mode doesn't use IV - PKCS7 padding
                     pad_len = block_size - (len(data_bytes) % block_size)
                     padded_data = data_bytes + bytes([pad_len] * pad_len)
                     ciphertext = sm4_cipher.encrypt(padded_data)
                     
-                elif mode.upper() == 'CBC':
+                elif mode_upper == 'CBC':
                     # CBC mode requires IV - PKCS7 padding
                     if not iv_or_nonce:
                         iv_or_nonce = secrets.token_bytes(block_size)
@@ -618,7 +980,7 @@ class CryptoService:
                         ciphertext += encrypted_block
                         prev_block = encrypted_block
                         
-                elif mode.upper() == 'CFB':
+                elif mode_upper == 'CFB':
                     # CFB mode - no padding needed
                     if not iv_or_nonce:
                         iv_or_nonce = secrets.token_bytes(block_size)
@@ -633,7 +995,7 @@ class CryptoService:
                         ciphertext += cipher_block
                         prev_block = cipher_block + prev_block[len(cipher_block):]
                         
-                elif mode.upper() == 'OFB':
+                elif mode_upper == 'OFB':
                     # OFB mode - no padding needed
                     if not iv_or_nonce:
                         iv_or_nonce = secrets.token_bytes(block_size)
@@ -648,7 +1010,7 @@ class CryptoService:
                         ciphertext += cipher_block
                         prev_block = keystream
                         
-                elif mode.upper() == 'CTR':
+                elif mode_upper == 'CTR':
                     # CTR mode - no padding needed
                     if not iv_or_nonce:
                         iv_or_nonce = secrets.token_bytes(block_size)
@@ -664,7 +1026,7 @@ class CryptoService:
                         ciphertext += cipher_block
                         counter += 1
                         
-                elif mode.upper() == 'GCM':
+                elif mode_upper == 'GCM':
                     # Note: GCM is not part of original SM4 spec but supported in some libraries
                     # For this implementation, we'll treat it as CTR mode with authentication
                     if not iv_or_nonce:
@@ -689,11 +1051,11 @@ class CryptoService:
             result = {
                 'ciphertext': CryptoService.encode_output(ciphertext, encoding),
                 'key': key.hex(),
-                'algorithm': algorithm.upper(),
-                'mode': mode.upper()
+                'algorithm': algorithm_upper,
+                'mode': mode_upper
             }
             
-            if iv_or_nonce and mode.upper() != 'ECB':
+            if iv_or_nonce and mode_upper != 'ECB':
                 result['iv_or_nonce'] = iv_or_nonce.hex()
             
             if tag:
@@ -706,22 +1068,44 @@ class CryptoService:
             raise ValueError(f"Encryption failed: {str(e)}")
     
     @staticmethod
-    def decrypt_data(algorithm, mode, data_bytes, key, encoding, iv_or_nonce=None, tag=None, rounds=None, counter=0):
+    def decrypt_data(
+        algorithm,
+        mode,
+        data_bytes,
+        key,
+        encoding,
+        iv_or_nonce=None,
+        tag=None,
+        rounds=None,
+        counter=0,
+        offset=0,
+        morse_letter_delimiter=' ',
+        morse_word_delimiter='\n',
+        morse_dot_symbol='.',
+        morse_dash_symbol='-',
+        morse_case_sequence=None
+    ):
         """Decrypt data using various algorithms and modes"""
         try:
             algorithm_upper = algorithm.upper()
-            mode_upper = mode.upper() if mode else 'STREAM'
+            mode_upper = mode.upper() if mode else ('RAILFENCE' if algorithm_upper == 'RAILFENCE' else 'STREAM')
 
             # Validate algorithm
-            if algorithm_upper not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4', 'SALSA20', 'CHACHA20']:
-                raise ValueError(f"Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, SM4, Salsa20, and ChaCha20 are supported.")
+            if algorithm_upper not in SUPPORTED_ALGORITHM_SET:
+                raise ValueError(f"Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, SM4, Salsa20, ChaCha20, Rail Fence, and Morse are supported.")
             
             # Validate mode
-            if algorithm_upper in ['SALSA20', 'CHACHA20']:
-                if mode_upper not in ['STREAM', 'SALSA20']:
+            if algorithm_upper == 'MORSE':
+                if mode_upper not in MORSE_MODE_SET:
+                    raise ValueError(f"Morse uses MORSE mode only (got {mode}).")
+            elif algorithm_upper == 'RAILFENCE':
+                if mode_upper not in RAILFENCE_MODE_SET:
+                    raise ValueError(f"Rail Fence uses RAILFENCE mode only (got {mode}).")
+            elif algorithm_upper in STREAM_CIPHERS:
+                if mode_upper not in STREAM_MODES:
                     raise ValueError(f"{algorithm_upper} is a stream cipher and only supports STREAM mode (got {mode}).")
             else:
-                if mode_upper not in ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB']:
+                if mode_upper not in BLOCK_MODE_SET:
                     raise ValueError(f"Unsupported mode: {mode}. Only CBC, CFB, OFB, CTR, GCM, and ECB modes are supported.")
             
             # Validate algorithm-mode combinations
@@ -731,6 +1115,42 @@ class CryptoService:
                 raise ValueError(f"Blowfish does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for Blowfish.")
             if algorithm_upper == 'RC2' and mode_upper not in ['CBC', 'ECB']:
                 raise ValueError(f"RC2 only supports CBC (with IV) and ECB (without IV) modes.")
+
+            if algorithm_upper == 'MORSE':
+                text = data_bytes.decode('latin-1') if isinstance(data_bytes, (bytes, bytearray)) else str(data_bytes)
+                plaintext = CryptoService.morse_decrypt(
+                    text,
+                    letter_delimiter=morse_letter_delimiter,
+                    word_delimiter=morse_word_delimiter,
+                    dot_symbol=morse_dot_symbol,
+                    dash_symbol=morse_dash_symbol
+                )
+                if morse_case_sequence:
+                    plaintext = CryptoService._apply_morse_case_sequence(plaintext, morse_case_sequence)
+                result = {
+                    'plaintext': plaintext,
+                    'key': '',
+                    'algorithm': 'MORSE',
+                    'mode': 'MORSE',
+                    'letter_delimiter': morse_letter_delimiter,
+                    'word_delimiter': morse_word_delimiter,
+                    'dot_symbol': morse_dot_symbol,
+                    'dash_symbol': morse_dash_symbol
+                }
+                return result
+            if algorithm_upper == 'RAILFENCE':
+                rails = CryptoService.parse_railfence_rails(key)
+                offset_value = CryptoService.parse_railfence_offset(offset)
+                sanitized_data = data_bytes.replace(b'\r', b'').replace(b'\n', b'')
+                decrypted_data = CryptoService.rail_fence_decrypt(sanitized_data, rails, offset_value)
+                result = {
+                    'plaintext': CryptoService.encode_output(decrypted_data, encoding),
+                    'key': str(rails),
+                    'offset': offset_value,
+                    'algorithm': 'RAILFENCE',
+                    'mode': 'RAILFENCE'
+                }
+                return result
 
             if algorithm_upper == 'SALSA20':
                 if len(key) not in CryptoService.SALSA20_KEY_SIZES:
@@ -796,9 +1216,9 @@ class CryptoService:
                 block_size = CryptoService.SM4_BLOCK_SIZE
 
             
-            if algorithm.upper() == 'AES':
+            if algorithm_upper == 'AES':
                 # AES decryption
-                if mode.upper() == 'ECB':
+                if mode_upper == 'ECB':
                     # ECB mode doesn't use IV
                     cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())
                     decryptor = cipher.decryptor()
@@ -807,7 +1227,7 @@ class CryptoService:
                     unpadder = padding.PKCS7(block_size * 8).unpadder()
                     decrypted_data = unpadder.update(decrypted_padded) + unpadder.finalize()
                     
-                elif mode.upper() == 'CBC':
+                elif mode_upper == 'CBC':
                     # IV is required for CBC mode
                     if not iv_or_nonce:
                         raise ValueError("IV is required for CBC mode")
@@ -818,7 +1238,7 @@ class CryptoService:
                     unpadder = padding.PKCS7(block_size * 8).unpadder()
                     decrypted_data = unpadder.update(decrypted_padded) + unpadder.finalize()
                     
-                elif mode.upper() == 'CFB':
+                elif mode_upper == 'CFB':
                     # IV is required for CFB mode
                     if not iv_or_nonce:
                         raise ValueError("IV is required for CFB mode")
@@ -826,7 +1246,7 @@ class CryptoService:
                     decryptor = cipher.decryptor()
                     decrypted_data = decryptor.update(data_bytes) + decryptor.finalize()
                     
-                elif mode.upper() == 'OFB':
+                elif mode_upper == 'OFB':
                     # IV is required for OFB mode
                     if not iv_or_nonce:
                         raise ValueError("IV is required for OFB mode")
@@ -834,7 +1254,7 @@ class CryptoService:
                     decryptor = cipher.decryptor()
                     decrypted_data = decryptor.update(data_bytes) + decryptor.finalize()
                     
-                elif mode.upper() == 'CTR':
+                elif mode_upper == 'CTR':
                     # Nonce is required for CTR mode
                     if not iv_or_nonce:
                         raise ValueError("Nonce is required for CTR mode")
@@ -842,7 +1262,7 @@ class CryptoService:
                     decryptor = cipher.decryptor()
                     decrypted_data = decryptor.update(data_bytes) + decryptor.finalize()
                     
-                elif mode.upper() == 'GCM':
+                elif mode_upper == 'GCM':
                     # Nonce and tag are required for GCM mode
                     if not iv_or_nonce:
                         raise ValueError("Nonce is required for GCM mode")
@@ -852,12 +1272,12 @@ class CryptoService:
                     decryptor = cipher.decryptor()
                     decrypted_data = decryptor.update(data_bytes) + decryptor.finalize()
             
-            elif algorithm.upper() == '3DES':
+            elif algorithm_upper == '3DES':
                 # TripleDES decryption
                 # The key should already be 16 or 24 bytes from the validation
                 triple_des_key = key
                 
-                if mode.upper() == 'ECB':
+                if mode_upper == 'ECB':
                     # ECB mode doesn't use IV
                     cipher = Cipher(algorithms.TripleDES(triple_des_key), modes.ECB(), backend=default_backend())
                     decryptor = cipher.decryptor()
@@ -866,7 +1286,7 @@ class CryptoService:
                     unpadder = padding.PKCS7(block_size * 8).unpadder()
                     decrypted_data = unpadder.update(decrypted_padded) + unpadder.finalize()
                     
-                elif mode.upper() == 'CBC':
+                elif mode_upper == 'CBC':
                     # IV is required for CBC mode
                     if not iv_or_nonce:
                         raise ValueError("IV is required for CBC mode")
@@ -877,7 +1297,7 @@ class CryptoService:
                     unpadder = padding.PKCS7(block_size * 8).unpadder()
                     decrypted_data = unpadder.update(decrypted_padded) + unpadder.finalize()
                     
-                elif mode.upper() == 'CFB':
+                elif mode_upper == 'CFB':
                     # IV is required for CFB mode
                     if not iv_or_nonce:
                         raise ValueError("IV is required for CFB mode")
@@ -885,7 +1305,7 @@ class CryptoService:
                     decryptor = cipher.decryptor()
                     decrypted_data = decryptor.update(data_bytes) + decryptor.finalize()
                     
-                elif mode.upper() == 'OFB':
+                elif mode_upper == 'OFB':
                     # IV is required for OFB mode
                     if not iv_or_nonce:
                         raise ValueError("IV is required for OFB mode")
@@ -893,9 +1313,9 @@ class CryptoService:
                     decryptor = cipher.decryptor()
                     decrypted_data = decryptor.update(data_bytes) + decryptor.finalize()
             
-            elif algorithm.upper() == 'BLOWFISH':
+            elif algorithm_upper == 'BLOWFISH':
                 # Blowfish decryption
-                if mode.upper() == 'ECB':
+                if mode_upper == 'ECB':
                     # ECB mode doesn't use IV
                     cipher = Cipher(algorithms.Blowfish(key), modes.ECB(), backend=default_backend())
                     decryptor = cipher.decryptor()
@@ -904,7 +1324,7 @@ class CryptoService:
                     unpadder = padding.PKCS7(block_size * 8).unpadder()
                     decrypted_data = unpadder.update(decrypted_padded) + unpadder.finalize()
                     
-                elif mode.upper() == 'CBC':
+                elif mode_upper == 'CBC':
                     # IV is required for CBC mode
                     if not iv_or_nonce:
                         raise ValueError("IV is required for CBC mode")
@@ -915,7 +1335,7 @@ class CryptoService:
                     unpadder = padding.PKCS7(block_size * 8).unpadder()
                     decrypted_data = unpadder.update(decrypted_padded) + unpadder.finalize()
                     
-                elif mode.upper() == 'CFB':
+                elif mode_upper == 'CFB':
                     # IV is required for CFB mode
                     if not iv_or_nonce:
                         raise ValueError("IV is required for CFB mode")
@@ -923,7 +1343,7 @@ class CryptoService:
                     decryptor = cipher.decryptor()
                     decrypted_data = decryptor.update(data_bytes) + decryptor.finalize()
                     
-                elif mode.upper() == 'OFB':
+                elif mode_upper == 'OFB':
                     # IV is required for OFB mode
                     if not iv_or_nonce:
                         raise ValueError("IV is required for OFB mode")
@@ -931,18 +1351,18 @@ class CryptoService:
                     decryptor = cipher.decryptor()
                     decrypted_data = decryptor.update(data_bytes) + decryptor.finalize()
             
-            elif algorithm.upper() == 'RC2':
+            elif algorithm_upper == 'RC2':
                 # RC2 decryption with 128-bit effective key length (common standard)
                 effective_keylen = 128  # Must match encryption effective key length
                 
-                if mode.upper() == 'ECB':
+                if mode_upper == 'ECB':
                     # ECB mode doesn't use IV - PKCS7 padding removal for both CBC and ECB
                     cipher = ARC2.new(key, ARC2.MODE_ECB, effective_keylen=effective_keylen)
                     decrypted_padded = cipher.decrypt(data_bytes)
                     pad_len = decrypted_padded[-1]
                     decrypted_data = decrypted_padded[:-pad_len]
                     
-                elif mode.upper() == 'CBC':
+                elif mode_upper == 'CBC':
                     # CBC mode requires IV - PKCS7 padding removal for both CBC and ECB
                     if not iv_or_nonce:
                         raise ValueError("IV is required for CBC mode")
@@ -951,17 +1371,17 @@ class CryptoService:
                     pad_len = decrypted_padded[-1]
                     decrypted_data = decrypted_padded[:-pad_len]
 
-            elif algorithm.upper() == 'SM4':
+            elif algorithm_upper == 'SM4':
                 # SM4 decryption using gmalg library
                 sm4_cipher = gmalg.SM4(key)
                 
-                if mode.upper() == 'ECB':
+                if mode_upper == 'ECB':
                     # ECB mode doesn't use IV - PKCS7 padding removal
                     decrypted_padded = sm4_cipher.decrypt(data_bytes)
                     pad_len = decrypted_padded[-1]
                     decrypted_data = decrypted_padded[:-pad_len]
                     
-                elif mode.upper() == 'CBC':
+                elif mode_upper == 'CBC':
                     # CBC mode requires IV - PKCS7 padding removal
                     if not iv_or_nonce:
                         raise ValueError("IV is required for CBC mode")
@@ -978,7 +1398,7 @@ class CryptoService:
                     pad_len = decrypted_data[-1]
                     decrypted_data = decrypted_data[:-pad_len]
                     
-                elif mode.upper() == 'CFB':
+                elif mode_upper == 'CFB':
                     # CFB mode - no padding removal needed
                     if not iv_or_nonce:
                         raise ValueError("IV is required for CFB mode")
@@ -993,7 +1413,7 @@ class CryptoService:
                         decrypted_data += plain_block
                         prev_block = cipher_block + prev_block[len(cipher_block):]
                         
-                elif mode.upper() == 'OFB':
+                elif mode_upper == 'OFB':
                     # OFB mode - no padding removal needed
                     if not iv_or_nonce:
                         raise ValueError("IV is required for OFB mode")
@@ -1008,7 +1428,7 @@ class CryptoService:
                         decrypted_data += plain_block
                         prev_block = keystream
                         
-                elif mode.upper() == 'CTR':
+                elif mode_upper == 'CTR':
                     # CTR mode - no padding removal needed
                     if not iv_or_nonce:
                         raise ValueError("Nonce is required for CTR mode")
@@ -1024,7 +1444,7 @@ class CryptoService:
                         decrypted_data += plain_block
                         counter += 1
                         
-                elif mode.upper() == 'GCM':
+                elif mode_upper == 'GCM':
                     # GCM mode - no padding removal needed
                     if not iv_or_nonce:
                         raise ValueError("Nonce is required for GCM mode")
@@ -1053,8 +1473,8 @@ class CryptoService:
             result = {
                 'plaintext': CryptoService.encode_output(decrypted_data, encoding),
                 'key': key.hex(),
-                'algorithm': algorithm.upper(),
-                'mode': mode.upper()
+                'algorithm': algorithm_upper,
+                'mode': mode_upper
             }
             
             if iv_or_nonce:
@@ -1072,9 +1492,9 @@ def home():
     return jsonify({
         'status': 'success',
         'message': 'EnCodeLab Crypto Backend is running',
-        'supported_algorithms': ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4', 'SALSA20', 'CHACHA20'],
-        'supported_modes': ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB', 'STREAM'],
-        'supported_encodings': ['HEX', 'RAW']
+        'supported_algorithms': list(SUPPORTED_ALGORITHMS),
+        'supported_modes': list(BLOCK_MODES) + ['STREAM', 'RAILFENCE', 'MORSE'],
+        'supported_encodings': list(SUPPORTED_ENCODINGS)
     })
 
 @app.route('/encrypt', methods=['POST'])
@@ -1099,23 +1519,35 @@ def encrypt():
         output_encoding = data.get('outputFormat', 'HEX')  # Default to HEX for output
         provided_key = data.get('key')
         provided_iv = data.get('iv_or_nonce') or data.get('iv')
+        key_format = data.get('key_format')
+        iv_format = data.get('iv_format')
         salsa_rounds = data.get('rounds')
         salsa_counter = data.get('counter', 0)
         chacha_rounds = data.get('rounds')
         chacha_counter = data.get('counter', 0)
-        chacha_rounds = data.get('rounds')
-        chacha_counter = data.get('counter', 0)
+        algorithm_upper = algorithm.upper()
+        mode_upper = mode.upper() if mode else ('RAILFENCE' if algorithm_upper == 'RAILFENCE' else 'STREAM')
+        is_salsa = algorithm_upper == 'SALSA20'
+        is_chacha = algorithm_upper == 'CHACHA20'
+        is_railfence = algorithm_upper == 'RAILFENCE'
+        is_morse = algorithm_upper == 'MORSE'
         
         # Validate algorithm
-        if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4', 'SALSA20', 'CHACHA20']:
-            return jsonify({'error': f'Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, SM4, Salsa20, and ChaCha20 are supported.'}), 400
+        if algorithm_upper not in SUPPORTED_ALGORITHM_SET:
+            return jsonify({'error': f'Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, SM4, Salsa20, ChaCha20, Rail Fence, and Morse are supported.'}), 400
         
         # Validate mode
-        if algorithm.upper() in ['SALSA20', 'CHACHA20']:
-            if mode.upper() not in ['STREAM', 'SALSA20']:
-                return jsonify({'error': f'{algorithm.upper()} is a stream cipher and only supports STREAM mode (got {mode}).'}), 400
+        if is_morse:
+            if mode_upper not in MORSE_MODE_SET:
+                return jsonify({'error': f'Morse uses MORSE mode only (got {mode}).'}), 400
+        elif is_railfence:
+            if mode_upper not in RAILFENCE_MODE_SET:
+                return jsonify({'error': f'Rail Fence uses RAILFENCE mode only (got {mode}).'}), 400
+        elif algorithm_upper in STREAM_CIPHERS:
+            if mode_upper not in STREAM_MODES:
+                return jsonify({'error': f'{algorithm_upper} is a stream cipher and only supports STREAM mode (got {mode}).'}), 400
             # Validate rounds if provided
-            if algorithm.upper() == 'SALSA20':
+            if is_salsa:
                 if salsa_rounds is None:
                     salsa_rounds = 20
                 if salsa_rounds not in CryptoService.SALSA20_ALLOWED_ROUNDS:
@@ -1126,56 +1558,89 @@ def encrypt():
                 if chacha_rounds not in CryptoService.CHACHA20_ALLOWED_ROUNDS:
                     return jsonify({'error': f'Invalid ChaCha20 rounds: {chacha_rounds}. Must be one of {CryptoService.CHACHA20_ALLOWED_ROUNDS}.'}), 400
             # Validate counter
-            if algorithm.upper() == 'SALSA20':
+            if is_salsa:
                 if not isinstance(salsa_counter, int) or salsa_counter < 0:
                     return jsonify({'error': 'Salsa20 counter must be a non-negative integer.'}), 400
             else:
                 if not isinstance(chacha_counter, int) or chacha_counter < 0:
                     return jsonify({'error': 'ChaCha20 counter must be a non-negative integer.'}), 400
         else:
-            if mode.upper() not in ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB']:
+            if mode_upper not in BLOCK_MODE_SET:
                 return jsonify({'error': f'Unsupported mode: {mode}. Only CBC, CFB, OFB, CTR, GCM, and ECB modes are supported.'}), 400
         
         # Validate algorithm-mode combinations
-        if algorithm.upper() == '3DES' and mode.upper() in ['CTR', 'GCM']:
+        if algorithm_upper == '3DES' and mode_upper in ['CTR', 'GCM']:
             return jsonify({'error': f'3DES does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for 3DES. (CTR mode is not supported by the OpenSSL backend)'}), 400
-        if algorithm.upper() == 'BLOWFISH' and mode.upper() in ['CTR', 'GCM']:
+        if algorithm_upper == 'BLOWFISH' and mode_upper in ['CTR', 'GCM']:
             return jsonify({'error': f'Blowfish does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for Blowfish.'}), 400
 
         
+        if is_morse or is_railfence:
+            input_encoding = 'RAW'
+            output_encoding = 'RAW'
+
         # Validate encodings
-        if input_encoding.upper() not in ['HEX', 'RAW']:
+        if input_encoding.upper() not in SUPPORTED_ENCODING_SET:
             return jsonify({'error': f'Unsupported input encoding: {input_encoding}'}), 400
-        if output_encoding.upper() not in ['HEX', 'RAW']:
+        if output_encoding.upper() not in SUPPORTED_ENCODING_SET:
             return jsonify({'error': f'Unsupported output encoding: {output_encoding}'}), 400
         
         # Handle key validation or generation
         key = None
         key_generated = False
         requested_key_size = data.get('keySize')  # Key size in bytes from frontend
-        
-        if provided_key:
-            key = CryptoService.validate_key(provided_key, algorithm)
+        rails_value = data.get('rails')
+        rail_offset = data.get('offset')
+        morse_letter_delimiter = data.get('letter_delimiter', ' ')
+        morse_word_delimiter = data.get('word_delimiter', '\n')
+        morse_dot_symbol = data.get('dot_symbol', '.')
+        morse_dash_symbol = data.get('dash_symbol', '-')
+        morse_case_sequence = data.get('case_sequence')
+        if morse_case_sequence is not None and not isinstance(morse_case_sequence, str):
+            morse_case_sequence = str(morse_case_sequence)
+        key_format_upper = CryptoService._normalize_key_format(key_format)
+        iv_format_upper = CryptoService._normalize_key_format(iv_format)
+        key_format_output = 'HEX' if key_format_upper == 'AUTO' else key_format_upper
+        iv_format_output = 'HEX' if iv_format_upper == 'AUTO' else iv_format_upper
+        if rails_value is None:
+            rails_value = requested_key_size
+
+        if is_morse:
+            key = None
+            key_generated = False
+        elif is_railfence:
+            try:
+                rails = CryptoService.parse_railfence_rails(provided_key or rails_value, default=3)
+                rail_offset = CryptoService.parse_railfence_offset(rail_offset)
+            except ValueError as e:
+                return jsonify({'error': str(e)}), 400
+            key = rails
+            key_generated = not provided_key and rails_value is None
+        elif provided_key:
+            try:
+                key = CryptoService.validate_key(provided_key, algorithm, key_format=key_format_upper)
+            except ValueError as e:
+                return jsonify({'error': str(e)}), 400
             if not key:
-                if algorithm.upper() == 'AES':
+                if algorithm_upper == 'AES':
                     return jsonify({'error': 'Invalid key provided. AES key must be 16, 24, or 32 bytes long.'}), 400
-                elif algorithm.upper() == '3DES':
+                elif algorithm_upper == '3DES':
                     return jsonify({'error': 'Invalid key provided. 3DES key must be 16 or 24 bytes long.'}), 400
-                elif algorithm.upper() == 'BLOWFISH':
+                elif algorithm_upper == 'BLOWFISH':
                     return jsonify({'error': f'Invalid key provided. Blowfish key must be between {CryptoService.BLOWFISH_MIN_KEY_SIZE} and {CryptoService.BLOWFISH_MAX_KEY_SIZE} bytes (32-448 bits) long.'}), 400
-                elif algorithm.upper() == 'RC2':
+                elif algorithm_upper == 'RC2':
                     return jsonify({'error': f'Invalid key provided. RC2 key must be between {CryptoService.RC2_MIN_KEY_SIZE} and {CryptoService.RC2_MAX_KEY_SIZE} bytes (8-1024 bits) long.'}), 400
-                elif algorithm.upper() == 'SM4':
+                elif algorithm_upper == 'SM4':
                     return jsonify({'error': 'Invalid key provided. SM4 key must be exactly 16 bytes (128 bits) long.'}), 400
-                elif algorithm.upper() == 'SALSA20':
+                elif algorithm_upper == 'SALSA20':
                     return jsonify({'error': 'Invalid key provided. Salsa20 key must be 16 or 32 bytes (128/256 bits).'}), 400
-                elif algorithm.upper() == 'CHACHA20':
+                elif algorithm_upper == 'CHACHA20':
                     return jsonify({'error': 'Invalid key provided. ChaCha20 key must be exactly 32 bytes (256 bits).'}), 400
                 else:
                     return jsonify({'error': 'Invalid key provided.'}), 400
         else:
             # Generate key with specified size if provided
-            key = CryptoService.generate_random_key(algorithm, requested_key_size)
+            key = CryptoService.generate_random_key(algorithm, requested_key_size, key_format_upper)
             key_generated = True
         
         # Decode input data
@@ -1188,22 +1653,43 @@ def encrypt():
         iv_or_nonce = None
         if provided_iv:
             try:
-                iv_or_nonce = bytes.fromhex(provided_iv)
-            except ValueError:
-                return jsonify({'error': 'Invalid IV format. Must be hexadecimal.'}), 400
-        elif algorithm.upper() == 'SALSA20':
-            iv_or_nonce = secrets.token_bytes(CryptoService.SALSA20_NONCE_SIZE)
-        elif algorithm.upper() == 'CHACHA20':
-            iv_or_nonce = secrets.token_bytes(CryptoService.CHACHA20_NONCE_SIZE)
+                iv_or_nonce = CryptoService.decode_key_material(provided_iv, iv_format_upper, 'IV/nonce')
+            except ValueError as e:
+                return jsonify({'error': str(e)}), 400
+        elif is_salsa:
+            iv_or_nonce = CryptoService._random_bytes_for_format(CryptoService.SALSA20_NONCE_SIZE, iv_format_upper)
+        elif is_chacha:
+            iv_or_nonce = CryptoService._random_bytes_for_format(CryptoService.CHACHA20_NONCE_SIZE, iv_format_upper)
         
         # Encrypt data
         try:
             import time
             start_time = time.perf_counter()
             # Use algorithm-specific rounds/counter
-            use_rounds = salsa_rounds if algorithm.upper() == 'SALSA20' else chacha_rounds
-            use_counter = salsa_counter if algorithm.upper() == 'SALSA20' else chacha_counter
-            result = CryptoService.encrypt_data(algorithm, mode, data_bytes, key, output_encoding, iv_or_nonce, use_rounds, use_counter)
+            use_rounds = salsa_rounds if is_salsa else chacha_rounds
+            use_counter = salsa_counter if is_salsa else chacha_counter
+            result = CryptoService.encrypt_data(
+                algorithm,
+                mode,
+                data_bytes,
+                key,
+                output_encoding,
+                iv_or_nonce,
+                use_rounds,
+                use_counter,
+                rail_offset,
+                morse_letter_delimiter,
+                morse_word_delimiter,
+                morse_dot_symbol,
+                morse_dash_symbol
+            )
+            if not is_morse and not is_railfence:
+                if key is not None:
+                    result['key'] = CryptoService.encode_key_material(key, key_format_output, 'Key')
+                if iv_or_nonce is not None and mode_upper != 'ECB':
+                    result['iv_or_nonce'] = CryptoService.encode_key_material(iv_or_nonce, iv_format_output, 'IV/nonce')
+                result['key_format'] = key_format_output
+                result['iv_format'] = iv_format_output
             end_time = time.perf_counter()
             execution_time = round((end_time - start_time) * 1000, 2)  # Convert to milliseconds
             
@@ -1230,7 +1716,7 @@ def decrypt():
             return jsonify({'error': 'No JSON data provided'}), 400
         
         # Validate required fields
-        required_fields = ['algorithm', 'mode', 'data', 'encoding', 'key']
+        required_fields = ['algorithm', 'mode', 'data', 'encoding']
         for field in required_fields:
             if field not in data:
                 return jsonify({'error': f'Missing required field: {field}'}), 400
@@ -1240,21 +1726,46 @@ def decrypt():
         ciphertext = data['data']
         input_encoding = data['encoding']
         output_encoding = data.get('output_encoding', input_encoding)  # Default to input encoding if not specified
-        provided_key = data['key']
-        iv_or_nonce_hex = data.get('iv_or_nonce')
+        provided_key = data.get('key')
+        provided_iv = data.get('iv_or_nonce')
+        key_format = data.get('key_format')
+        iv_format = data.get('iv_format')
         tag_hex = data.get('tag')
         salsa_rounds = data.get('rounds')
         salsa_counter = data.get('counter', 0)
+        chacha_rounds = data.get('rounds')
+        chacha_counter = data.get('counter', 0)
+        rail_offset = data.get('offset')
+        morse_letter_delimiter = data.get('letter_delimiter', ' ')
+        morse_word_delimiter = data.get('word_delimiter', '\n')
+        morse_dot_symbol = data.get('dot_symbol', '.')
+        morse_dash_symbol = data.get('dash_symbol', '-')
+        morse_case_sequence = data.get('case_sequence')
+        if morse_case_sequence is not None and not isinstance(morse_case_sequence, str):
+            morse_case_sequence = str(morse_case_sequence)
+        key_format_upper = CryptoService._normalize_key_format(key_format)
+        iv_format_upper = CryptoService._normalize_key_format(iv_format)
+        key_format_output = 'HEX' if key_format_upper == 'AUTO' else key_format_upper
+        iv_format_output = 'HEX' if iv_format_upper == 'AUTO' else iv_format_upper
+        algorithm_upper = algorithm.upper()
+        mode_upper = mode.upper() if mode else 'MORSE'
+        is_morse = algorithm_upper == 'MORSE'
         
         # Validate algorithm
-        if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4', 'SALSA20', 'CHACHA20']:
-            return jsonify({'error': f'Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, SM4, Salsa20, and ChaCha20 are supported.'}), 400
+        if algorithm_upper not in SUPPORTED_ALGORITHM_SET:
+            return jsonify({'error': f'Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, SM4, Salsa20, ChaCha20, Rail Fence, and Morse are supported.'}), 400
         
         # Validate mode
-        if algorithm.upper() in ['SALSA20', 'CHACHA20']:
-            if mode.upper() not in ['STREAM', 'SALSA20']:
-                return jsonify({'error': f'{algorithm.upper()} is a stream cipher and only supports STREAM mode (got {mode}).'}), 400
-            if algorithm.upper() == 'SALSA20':
+        if is_morse:
+            if mode_upper not in MORSE_MODE_SET:
+                return jsonify({'error': f'Morse uses MORSE mode only (got {mode}).'}), 400
+        elif algorithm_upper == 'RAILFENCE':
+            if mode_upper not in RAILFENCE_MODE_SET:
+                return jsonify({'error': f'Rail Fence uses RAILFENCE mode only (got {mode}).'}), 400
+        elif algorithm_upper in STREAM_CIPHERS:
+            if mode_upper not in STREAM_MODES:
+                return jsonify({'error': f'{algorithm_upper} is a stream cipher and only supports STREAM mode (got {mode}).'}), 400
+            if algorithm_upper == 'SALSA20':
                 if salsa_rounds is None:
                     salsa_rounds = 20
                 if salsa_rounds not in CryptoService.SALSA20_ALLOWED_ROUNDS:
@@ -1269,66 +1780,112 @@ def decrypt():
                 if not isinstance(chacha_counter, int) or chacha_counter < 0:
                     return jsonify({'error': 'ChaCha20 counter must be a non-negative integer.'}), 400
         else:
-            if mode.upper() not in ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB']:
+            if mode_upper not in BLOCK_MODE_SET:
                 return jsonify({'error': f'Unsupported mode: {mode}. Only CBC, CFB, OFB, CTR, GCM, and ECB modes are supported.'}), 400
         
         # Validate algorithm-mode combinations
-        if algorithm.upper() == '3DES' and mode.upper() in ['CTR', 'GCM']:
+        if algorithm_upper == '3DES' and mode_upper in ['CTR', 'GCM']:
             return jsonify({'error': f'3DES does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for 3DES. (CTR mode is not supported by the OpenSSL backend)'}), 400
-        
+
+        if is_morse:
+            input_encoding = 'RAW'
+            output_encoding = 'RAW'
+
         # Validate encodings
-        if input_encoding.upper() not in ['HEX', 'RAW']:
+        if input_encoding.upper() not in SUPPORTED_ENCODING_SET:
             return jsonify({'error': f'Unsupported input encoding: {input_encoding}'}), 400
-        if output_encoding.upper() not in ['HEX', 'RAW']:
+        if output_encoding.upper() not in SUPPORTED_ENCODING_SET:
             return jsonify({'error': f'Unsupported output encoding: {output_encoding}'}), 400
         
         # Validate key
-        key = CryptoService.validate_key(provided_key, algorithm)
-        if not key:
-            if algorithm.upper() == 'AES':
-                return jsonify({'error': 'Invalid key provided. AES key must be 16, 24, or 32 bytes long.'}), 400
-            elif algorithm.upper() == '3DES':
-                return jsonify({'error': 'Invalid key provided. 3DES key must be 16 or 24 bytes long.'}), 400
-            elif algorithm.upper() == 'BLOWFISH':
-                return jsonify({'error': f'Invalid key provided. Blowfish key must be between {CryptoService.BLOWFISH_MIN_KEY_SIZE} and {CryptoService.BLOWFISH_MAX_KEY_SIZE} bytes (32-448 bits) long.'}), 400
-            elif algorithm.upper() == 'SALSA20':
-                return jsonify({'error': 'Invalid key provided. Salsa20 key must be 16 or 32 bytes (128/256 bits).'}), 400
-            else:
-                return jsonify({'error': 'Invalid key provided.'}), 400
+        if is_morse:
+            key = None
+        elif algorithm_upper == 'RAILFENCE':
+            try:
+                key = CryptoService.parse_railfence_rails(provided_key)
+                rail_offset = CryptoService.parse_railfence_offset(rail_offset)
+            except ValueError as e:
+                return jsonify({'error': str(e)}), 400
+        else:
+            if not provided_key:
+                return jsonify({'error': 'Key is required for decryption.'}), 400
+            try:
+                key = CryptoService.validate_key(provided_key, algorithm, key_format=key_format_upper)
+            except ValueError as e:
+                return jsonify({'error': str(e)}), 400
+            if not key:
+                if algorithm_upper == 'AES':
+                    return jsonify({'error': 'Invalid key provided. AES key must be 16, 24, or 32 bytes long.'}), 400
+                elif algorithm_upper == '3DES':
+                    return jsonify({'error': 'Invalid key provided. 3DES key must be 16 or 24 bytes long.'}), 400
+                elif algorithm_upper == 'BLOWFISH':
+                    return jsonify({'error': f'Invalid key provided. Blowfish key must be between {CryptoService.BLOWFISH_MIN_KEY_SIZE} and {CryptoService.BLOWFISH_MAX_KEY_SIZE} bytes (32-448 bits) long.'}), 400
+                elif algorithm_upper == 'SALSA20':
+                    return jsonify({'error': 'Invalid key provided. Salsa20 key must be 16 or 32 bytes (128/256 bits).'}), 400
+                else:
+                    return jsonify({'error': 'Invalid key provided.'}), 400
         
         # Check for required IV/nonce for modes that need it
         modes_requiring_iv = ['CBC', 'CFB', 'OFB', 'CTR', 'GCM']
-        if algorithm.upper() == 'SALSA20':
+        if algorithm_upper == 'SALSA20':
             modes_requiring_iv = ['STREAM']
-        if mode.upper() in modes_requiring_iv and not iv_or_nonce_hex:
+        if mode_upper in modes_requiring_iv and not provided_iv:
             return jsonify({'error': f'IV/nonce is required for {mode} mode'}), 400
         
         # Check for required tag for GCM mode
-        if mode.upper() == 'GCM' and not tag_hex:
+        if mode_upper == 'GCM' and not tag_hex:
             return jsonify({'error': 'Authentication tag is required for GCM mode'}), 400
         
         # Decode input data and IV/nonce/tag
         try:
             data_bytes = CryptoService.decode_input(ciphertext, input_encoding)
-            
-            iv_or_nonce = None
-            if iv_or_nonce_hex:
-                iv_or_nonce = bytes.fromhex(iv_or_nonce_hex)
-            
-            tag = None
-            if tag_hex:
-                tag = bytes.fromhex(tag_hex)
-                
         except ValueError as e:
             return jsonify({'error': f'Failed to decode input: {str(e)}'}), 400
+
+        iv_or_nonce = None
+        if provided_iv:
+            try:
+                iv_or_nonce = CryptoService.decode_key_material(provided_iv, iv_format_upper, 'IV/nonce')
+            except ValueError as e:
+                return jsonify({'error': str(e)}), 400
+
+        tag = None
+        if tag_hex:
+            try:
+                tag = bytes.fromhex(tag_hex)
+            except ValueError:
+                return jsonify({'error': 'Invalid authentication tag format. Must be hexadecimal.'}), 400
         
         # Decrypt data
         try:
             import time
             start_time = time.perf_counter()
-            use_rounds = salsa_rounds if algorithm.upper() == 'SALSA20' else chacha_rounds
-            use_counter = salsa_counter if algorithm.upper() == 'SALSA20' else chacha_counter
-            result = CryptoService.decrypt_data(algorithm, mode, data_bytes, key, output_encoding, iv_or_nonce, tag, use_rounds, use_counter)
+            use_rounds = salsa_rounds if algorithm_upper == 'SALSA20' else chacha_rounds
+            use_counter = salsa_counter if algorithm_upper == 'SALSA20' else chacha_counter
+            result = CryptoService.decrypt_data(
+                algorithm,
+                mode,
+                data_bytes,
+                key,
+                output_encoding,
+                iv_or_nonce,
+                tag,
+                use_rounds,
+                use_counter,
+                rail_offset,
+                morse_letter_delimiter,
+                morse_word_delimiter,
+                morse_dot_symbol,
+                morse_dash_symbol,
+                morse_case_sequence
+            )
+            if not is_morse and algorithm_upper != 'RAILFENCE':
+                if key is not None:
+                    result['key'] = CryptoService.encode_key_material(key, key_format_output, 'Key')
+                if iv_or_nonce is not None and mode_upper != 'ECB':
+                    result['iv_or_nonce'] = CryptoService.encode_key_material(iv_or_nonce, iv_format_output, 'IV/nonce')
+                result['key_format'] = key_format_output
+                result['iv_format'] = iv_format_output
             end_time = time.perf_counter()
             execution_time = round((end_time - start_time) * 1000, 2)  # Convert to milliseconds
             
@@ -1360,13 +1917,18 @@ def generate():
         algorithm = data.get('algorithm', 'AES')  # Default to AES
         key_size = data.get('key_size')  # Let the algorithm determine size
         iv_size = data.get('iv_size')    # Let the algorithm determine size
+        key_format = data.get('key_format', 'HEX')
+        iv_format = data.get('iv_format', 'HEX')
+        algorithm_upper = algorithm.upper()
+        key_format_upper = CryptoService._normalize_key_format(key_format)
+        iv_format_upper = CryptoService._normalize_key_format(iv_format)
         
         # Validate algorithm
-        if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4', 'SALSA20', 'CHACHA20']:
-            return jsonify({'error': 'Invalid algorithm. Must be AES, 3DES, Blowfish, RC2, SM4, Salsa20, or ChaCha20.'}), 400
+        if algorithm_upper not in SUPPORTED_ALGORITHM_SET:
+            return jsonify({'error': 'Invalid algorithm. Must be AES, 3DES, Blowfish, RC2, SM4, Salsa20, ChaCha20, Rail Fence, or Morse.'}), 400
         
         # Set appropriate sizes based on algorithm
-        if algorithm.upper() == 'AES':
+        if algorithm_upper == 'AES':
             if key_size is None:
                 key_size = 32  # Default to AES-256
             if iv_size is None:
@@ -1377,7 +1939,7 @@ def generate():
                 return jsonify({'error': 'Invalid AES key size. Must be 16, 24, or 32 bytes.'}), 400
             if iv_size not in [12, 16]:
                 return jsonify({'error': 'Invalid AES IV size. Must be 12 or 16 bytes.'}), 400
-        elif algorithm.upper() == '3DES':
+        elif algorithm_upper == '3DES':
             if key_size is None:
                 key_size = 24   # Default to 24 bytes for 3DES
             if iv_size is None:
@@ -1388,7 +1950,7 @@ def generate():
                 return jsonify({'error': 'Invalid 3DES key size. Must be 16 or 24 bytes.'}), 400
             if iv_size != 8:
                 return jsonify({'error': 'Invalid 3DES IV size. Must be 8 bytes.'}), 400
-        elif algorithm.upper() == 'BLOWFISH':
+        elif algorithm_upper == 'BLOWFISH':
             if key_size is None:
                 key_size = 16   # Default to 16 bytes (128 bits) for Blowfish - common usage
             if iv_size is None:
@@ -1399,7 +1961,7 @@ def generate():
                 return jsonify({'error': f'Invalid Blowfish key size. Must be between {CryptoService.BLOWFISH_MIN_KEY_SIZE} and {CryptoService.BLOWFISH_MAX_KEY_SIZE} bytes (32-448 bits).'}), 400
             if iv_size != 8:
                 return jsonify({'error': 'Invalid Blowfish IV size. Must be 8 bytes.'}), 400
-        elif algorithm.upper() == 'RC2':
+        elif algorithm_upper == 'RC2':
             if key_size is None:
                 key_size = 16   # Default to 16 bytes (128 bits) for RC2 - common usage
             if iv_size is None:
@@ -1410,14 +1972,44 @@ def generate():
                 return jsonify({'error': f'Invalid RC2 key size. Must be between {CryptoService.RC2_MIN_KEY_SIZE} and {CryptoService.RC2_MAX_KEY_SIZE} bytes (8-1024 bits).'}), 400
             if iv_size != 8:
                 return jsonify({'error': 'Invalid RC2 IV size. Must be 8 bytes.'}), 400
-        elif algorithm.upper() == 'SM4':
+        elif algorithm_upper == 'SM4':
             # SM4 has fixed key and IV sizes
             key_size = 16   # SM4 requires exactly 16 bytes (128 bits)
             iv_size = 16    # SM4 IV size is 16 bytes (128 bits)
-        elif algorithm.upper() == 'CHACHA20':
+        elif algorithm_upper == 'RAILFENCE':
+            if key_size is None:
+                key_size = 3
+            try:
+                rails = CryptoService.parse_railfence_rails(key_size)
+                offset_value = CryptoService.parse_railfence_offset(data.get('offset'))
+            except ValueError as e:
+                return jsonify({'error': str(e)}), 400
+            return jsonify({
+                'status': 'success',
+                'result': {
+                    'key': str(rails),
+                    'iv': '',
+                    'offset': offset_value,
+                    'algorithm': algorithm_upper,
+                    'key_size': rails,
+                    'iv_size': 0
+                }
+            })
+        elif algorithm_upper == 'MORSE':
+            return jsonify({
+                'status': 'success',
+                'result': {
+                    'key': '',
+                    'iv': '',
+                    'algorithm': algorithm_upper,
+                    'key_size': 0,
+                    'iv_size': 0
+                }
+            })
+        elif algorithm_upper == 'CHACHA20':
             key_size = CryptoService.CHACHA20_KEY_SIZE
             iv_size = CryptoService.CHACHA20_NONCE_SIZE
-        elif algorithm.upper() == 'SALSA20':
+        elif algorithm_upper == 'SALSA20':
             if key_size is None or key_size not in CryptoService.SALSA20_KEY_SIZES:
                 key_size = 32  # Default to 256-bit Salsa20 key
             if iv_size is None:
@@ -1427,17 +2019,19 @@ def generate():
 
         
         # Generate random key and IV
-        key = CryptoService.generate_random_key(algorithm, key_size)
-        iv = secrets.token_bytes(iv_size)
+        key = CryptoService.generate_random_key(algorithm, key_size, key_format_upper)
+        iv = CryptoService._random_bytes_for_format(iv_size, iv_format_upper)
         
         return jsonify({
             'status': 'success',
             'result': {
-                'key': key.hex(),
-                'iv': iv.hex(),
-                'algorithm': algorithm.upper(),
+                'key': CryptoService.encode_key_material(key, key_format_upper, 'Key'),
+                'iv': CryptoService.encode_key_material(iv, iv_format_upper, 'IV'),
+                'algorithm': algorithm_upper,
                 'key_size': key_size,
-                'iv_size': iv_size
+                'iv_size': iv_size,
+                'key_format': key_format_upper,
+                'iv_format': iv_format_upper
             }
         })
         
@@ -1470,12 +2064,24 @@ def benchmark():
         chacha_counter = data.get('counter', 0)
         scoring_model = str(data.get('scoringModel', 'general')).lower()
         power_consumption = data.get('powerConsumption', data.get('power', 1.0))
+        morse_letter_delimiter = data.get('letter_delimiter', ' ')
+        morse_word_delimiter = data.get('word_delimiter', '\n')
+        morse_dot_symbol = data.get('dot_symbol', '.')
+        morse_dash_symbol = data.get('dash_symbol', '-')
         try:
             power_consumption = float(power_consumption)
             if power_consumption <= 0:
                 power_consumption = 1.0
         except Exception:
             power_consumption = 1.0
+
+        algorithm_upper = algorithm.upper()
+        mode_upper = mode.upper() if mode else ('RAILFENCE' if algorithm_upper == 'RAILFENCE' else 'STREAM')
+        is_salsa = algorithm_upper == 'SALSA20'
+        is_chacha = algorithm_upper == 'CHACHA20'
+        is_railfence = algorithm_upper == 'RAILFENCE'
+        is_morse = algorithm_upper == 'MORSE'
+        is_stream = algorithm_upper in STREAM_CIPHERS
 
         # Normalize scoring model label
         scoring_aliases = {
@@ -1493,13 +2099,23 @@ def benchmark():
         scoring_model = scoring_aliases.get(scoring_model, 'general')
         
         # Validate algorithm and mode
-        if algorithm.upper() not in ['AES', '3DES', 'BLOWFISH', 'RC2', 'SM4', 'SALSA20', 'CHACHA20']:
-            return jsonify({'error': f'Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, SM4, Salsa20, and ChaCha20 are supported.'}), 400
+        if algorithm_upper not in SUPPORTED_ALGORITHM_SET:
+            return jsonify({'error': f'Unsupported algorithm: {algorithm}. Only AES, 3DES, Blowfish, RC2, SM4, Salsa20, ChaCha20, Rail Fence, and Morse are supported.'}), 400
         
-        if algorithm.upper() in ['SALSA20', 'CHACHA20']:
-            if mode.upper() not in ['STREAM', 'SALSA20']:
-                return jsonify({'error': f'{algorithm.upper()} is a stream cipher and only supports STREAM mode (got {mode}).'}), 400
-            if algorithm.upper() == 'SALSA20':
+        if is_morse:
+            if mode_upper not in MORSE_MODE_SET:
+                return jsonify({'error': f'Morse uses MORSE mode only (got {mode}).'}), 400
+            mode = 'MORSE'
+            mode_upper = 'MORSE'
+        elif is_railfence:
+            if mode_upper not in RAILFENCE_MODE_SET:
+                return jsonify({'error': f'Rail Fence uses RAILFENCE mode only (got {mode}).'}), 400
+            mode = 'RAILFENCE'
+            mode_upper = 'RAILFENCE'
+        elif is_stream:
+            if mode_upper not in STREAM_MODES:
+                return jsonify({'error': f'{algorithm_upper} is a stream cipher and only supports STREAM mode (got {mode}).'}), 400
+            if is_salsa:
                 if salsa_rounds not in CryptoService.SALSA20_ALLOWED_ROUNDS:
                     return jsonify({'error': f'Invalid Salsa20 rounds: {salsa_rounds}. Must be one of {CryptoService.SALSA20_ALLOWED_ROUNDS}.'}), 400
                 if not isinstance(salsa_counter, int) or salsa_counter < 0:
@@ -1510,13 +2126,14 @@ def benchmark():
                 if not isinstance(chacha_counter, int) or chacha_counter < 0:
                     return jsonify({'error': 'ChaCha20 counter must be a non-negative integer.'}), 400
             mode = 'STREAM'
-        elif mode.upper() not in ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB']:
+            mode_upper = 'STREAM'
+        elif mode_upper not in BLOCK_MODE_SET:
             return jsonify({'error': f'Unsupported mode: {mode}. Only CBC, CFB, OFB, CTR, GCM, and ECB modes are supported.'}), 400
         
         # Validate algorithm-mode combinations
-        if algorithm.upper() == '3DES' and mode.upper() in ['CTR', 'GCM']:
+        if algorithm_upper == '3DES' and mode_upper in ['CTR', 'GCM']:
             return jsonify({'error': f'3DES does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for 3DES. (CTR mode is not supported by the OpenSSL backend)'}), 400
-        if algorithm.upper() == 'BLOWFISH' and mode.upper() in ['CTR', 'GCM']:
+        if algorithm_upper == 'BLOWFISH' and mode_upper in ['CTR', 'GCM']:
             return jsonify({'error': f'Blowfish does not support {mode} mode. Only CBC, CFB, OFB, and ECB modes are supported for Blowfish.'}), 400
 
         
@@ -1526,40 +2143,53 @@ def benchmark():
         if chacha_rounds is None:
             chacha_rounds = 20
         salsa_counter = salsa_counter if isinstance(salsa_counter, int) and salsa_counter >= 0 else 0
+        rail_offset = 0
 
-        if algorithm.upper() == 'AES':
+        if algorithm_upper == 'AES':
             key = secrets.token_bytes(32)  # 256-bit key
             block_size = 16
-        elif algorithm.upper() == '3DES':
+        elif algorithm_upper == '3DES':
             key = secrets.token_bytes(24)  # 192-bit key
             block_size = 8
-        elif algorithm.upper() == 'BLOWFISH':
+        elif algorithm_upper == 'BLOWFISH':
             key = secrets.token_bytes(16)  # 128-bit key (common usage)
             block_size = 8
-        elif algorithm.upper() == 'RC2':
+        elif algorithm_upper == 'RC2':
             key = secrets.token_bytes(16)  # 128-bit key (common usage for RC2)
             block_size = 8
-        elif algorithm.upper() == 'SM4':
+        elif algorithm_upper == 'SM4':
             key = secrets.token_bytes(16)  # 128-bit key (fixed for SM4)
             block_size = 16
-        elif algorithm.upper() == 'CHACHA20':
+        elif algorithm_upper == 'CHACHA20':
             key = secrets.token_bytes(CryptoService.CHACHA20_KEY_SIZE)  # 256-bit key
             block_size = None  # stream
-        elif algorithm.upper() == 'SALSA20':
+        elif algorithm_upper == 'SALSA20':
             key = secrets.token_bytes(32)  # 256-bit key
             block_size = None  # Stream cipher; not block-based
+        elif algorithm_upper == 'RAILFENCE':
+            rails = CryptoService.parse_railfence_rails(data.get('rails'), default=3)
+            rail_offset = CryptoService.parse_railfence_offset(data.get('offset'))
+            key = rails
+            block_size = None
+        elif algorithm_upper == 'MORSE':
+            key = None
+            block_size = None
         else:
             raise ValueError(f"Unsupported algorithm for benchmarking: {algorithm}")
 
         
         # Generate IV if needed
         iv_or_nonce = None
-        if algorithm.upper() == 'SALSA20':
+        if is_salsa:
             iv_or_nonce = secrets.token_bytes(CryptoService.SALSA20_NONCE_SIZE)
-        elif algorithm.upper() == 'CHACHA20':
+        elif is_chacha:
             iv_or_nonce = secrets.token_bytes(CryptoService.CHACHA20_NONCE_SIZE)
-        elif mode.upper() != 'ECB':
-            if mode.upper() == 'GCM':
+        elif is_railfence:
+            iv_or_nonce = None
+        elif is_morse:
+            iv_or_nonce = None
+        elif mode_upper != 'ECB':
+            if mode_upper == 'GCM':
                 iv_or_nonce = secrets.token_bytes(12)  # 96-bit nonce for GCM
             else:
                 iv_or_nonce = secrets.token_bytes(block_size)
@@ -1573,10 +2203,8 @@ def benchmark():
         except Exception as e:
             return jsonify({'error': f'Invalid test data format: {str(e)}'}), 400
         
-        # Measure initial memory
-        process = psutil.Process(os.getpid())
-        initial_memory = process.memory_info().rss / 1024 / 1024  # MB
-        
+        result_encoding = 'RAW' if is_morse else 'HEX'
+
         # Run benchmark
         encryption_times = []
         decryption_times = []
@@ -1587,20 +2215,52 @@ def benchmark():
         # Warm up the system (run a few iterations without timing)
         for _ in range(min(3, iterations // 10)):
             try:
-                use_rounds = salsa_rounds if algorithm.upper() == 'SALSA20' else chacha_rounds
-                use_counter = salsa_counter if algorithm.upper() == 'SALSA20' else chacha_counter
-                encrypted_result = CryptoService.encrypt_data(algorithm, mode, data_bytes, key, 'HEX', iv_or_nonce, use_rounds, use_counter)
-                ciphertext_bytes = bytes.fromhex(encrypted_result['ciphertext'])
+                use_rounds = salsa_rounds if is_salsa else chacha_rounds
+                use_counter = salsa_counter if is_salsa else chacha_counter
+                encrypted_result = CryptoService.encrypt_data(
+                    algorithm,
+                    mode,
+                    data_bytes,
+                    key,
+                    result_encoding,
+                    iv_or_nonce,
+                    use_rounds,
+                    use_counter,
+                    rail_offset,
+                    morse_letter_delimiter,
+                    morse_word_delimiter,
+                    morse_dot_symbol,
+                    morse_dash_symbol
+                )
+                if is_morse:
+                    ciphertext_bytes = encrypted_result['ciphertext'].encode('latin-1')
+                else:
+                    ciphertext_bytes = bytes.fromhex(encrypted_result['ciphertext'])
                 
                 # Handle tag conversion for GCM mode in warm-up
                 tag = None
-                if mode.upper() == 'GCM' and encrypted_result.get('tag'):
+                if mode_upper == 'GCM' and encrypted_result.get('tag'):
                     try:
                         tag = bytes.fromhex(encrypted_result['tag'])
                     except (ValueError, TypeError):
                         tag = None
                 
-                CryptoService.decrypt_data(algorithm, mode, ciphertext_bytes, key, 'HEX', iv_or_nonce, tag, use_rounds, use_counter)
+                CryptoService.decrypt_data(
+                    algorithm,
+                    mode,
+                    ciphertext_bytes,
+                    key,
+                    result_encoding,
+                    iv_or_nonce,
+                    tag,
+                    use_rounds,
+                    use_counter,
+                    rail_offset,
+                    morse_letter_delimiter,
+                    morse_word_delimiter,
+                    morse_dot_symbol,
+                    morse_dash_symbol
+                )
             except Exception as e:
                 return jsonify({'error': f'Warm-up iteration failed: {str(e)}'}), 500
         
@@ -1615,19 +2275,27 @@ def benchmark():
             # Algorithm-specific memory profiling for research accuracy
             gc.collect()  # Clean memory state
             
-            # Get initial memory baseline
-            initial_memory = process.memory_info().rss / 1024 / 1024  # MB
-            
             start_time = time.perf_counter()
             try:
-                use_rounds = salsa_rounds if algorithm.upper() == 'SALSA20' else chacha_rounds
-                use_counter = salsa_counter if algorithm.upper() == 'SALSA20' else chacha_counter
-                encrypted_result = CryptoService.encrypt_data(algorithm, mode, data_bytes, key, 'HEX', iv_or_nonce, use_rounds, use_counter)
+                use_rounds = salsa_rounds if is_salsa else chacha_rounds
+                use_counter = salsa_counter if is_salsa else chacha_counter
+                encrypted_result = CryptoService.encrypt_data(
+                    algorithm,
+                    mode,
+                    data_bytes,
+                    key,
+                    result_encoding,
+                    iv_or_nonce,
+                    use_rounds,
+                    use_counter,
+                    rail_offset,
+                    morse_letter_delimiter,
+                    morse_word_delimiter,
+                    morse_dot_symbol,
+                    morse_dash_symbol
+                )
                 encryption_time = (time.perf_counter() - start_time) * 1000  # Convert to milliseconds
                 encryption_times.append(encryption_time)
-                
-                # Capture memory footprint during encryption
-                post_encryption_memory = process.memory_info().rss / 1024 / 1024  # MB
                 
                 # Measure actual object memory footprint
                 
@@ -1640,23 +2308,23 @@ def benchmark():
                 base_memory = key_memory + data_memory + result_memory
                 
                 # Algorithm-specific memory overhead (based on cryptographic properties)
-                if algorithm.upper() == 'AES':
-                    if mode.upper() == 'GCM':
+                if algorithm_upper == 'AES':
+                    if mode_upper == 'GCM':
                         # GCM needs additional memory for authentication state
                         overhead = base_memory * 0.3 + 0.002
-                    elif mode.upper() == 'CTR':
+                    elif mode_upper == 'CTR':
                         # CTR is memory efficient (no padding, stream-like)
                         overhead = base_memory * 0.1 + 0.001
                     else:  # CBC, CFB, OFB, ECB
                         # Standard block cipher overhead
                         overhead = base_memory * 0.2 + 0.0015
-                elif algorithm.upper() == '3DES':
+                elif algorithm_upper == '3DES':
                     # Triple DES has higher overhead due to three encryption rounds
                     overhead = base_memory * 0.4 + 0.003
-                elif algorithm.upper() == 'BLOWFISH':
+                elif algorithm_upper == 'BLOWFISH':
                     # Blowfish has key schedule overhead
                     overhead = base_memory * 0.25 + 0.002
-                elif algorithm.upper() in ['SALSA20', 'CHACHA20']:
+                elif is_stream:
                     # Stream cipher with minimal overhead
                     overhead = base_memory * 0.08 + 0.0008
                 else:
@@ -1668,22 +2336,37 @@ def benchmark():
                 
                 # Measure decryption time and memory with high precision
                 start_time = time.perf_counter()
-                ciphertext_bytes = bytes.fromhex(encrypted_result['ciphertext'])
+                if is_morse:
+                    ciphertext_bytes = encrypted_result['ciphertext'].encode('latin-1')
+                else:
+                    ciphertext_bytes = bytes.fromhex(encrypted_result['ciphertext'])
                 
                 # Handle tag conversion for GCM mode
                 tag = None
-                if mode.upper() == 'GCM' and encrypted_result.get('tag'):
+                if mode_upper == 'GCM' and encrypted_result.get('tag'):
                     try:
                         tag = bytes.fromhex(encrypted_result['tag'])
                     except (ValueError, TypeError):
                         tag = None
                 
-                decrypted_result = CryptoService.decrypt_data(algorithm, mode, ciphertext_bytes, key, 'HEX', iv_or_nonce, tag, use_rounds, use_counter)
+                decrypted_result = CryptoService.decrypt_data(
+                    algorithm,
+                    mode,
+                    ciphertext_bytes,
+                    key,
+                    result_encoding,
+                    iv_or_nonce,
+                    tag,
+                    use_rounds,
+                    use_counter,
+                    rail_offset,
+                    morse_letter_delimiter,
+                    morse_word_delimiter,
+                    morse_dot_symbol,
+                    morse_dash_symbol
+                )
                 decryption_time = (time.perf_counter() - start_time) * 1000  # Convert to milliseconds
                 decryption_times.append(decryption_time)
-                
-                # Capture memory footprint during decryption
-                post_decryption_memory = process.memory_info().rss / 1024 / 1024  # MB
                 
                 # Measure actual decryption memory footprint
                 ciphertext_memory = sys.getsizeof(ciphertext_bytes) / 1024 / 1024  # Ciphertext size
@@ -1693,23 +2376,23 @@ def benchmark():
                 base_decryption_memory = key_memory + ciphertext_memory + decrypted_memory
                 
                 # Algorithm-specific decryption overhead (usually lower than encryption)
-                if algorithm.upper() == 'AES':
-                    if mode.upper() == 'GCM':
+                if algorithm_upper == 'AES':
+                    if mode_upper == 'GCM':
                         # GCM needs tag verification
                         dec_overhead = base_decryption_memory * 0.25 + 0.0015
-                    elif mode.upper() == 'CTR':
+                    elif mode_upper == 'CTR':
                         # CTR decryption is very efficient
                         dec_overhead = base_decryption_memory * 0.05 + 0.0005
                     else:  # CBC, CFB, OFB, ECB
                         # Standard block cipher decryption
                         dec_overhead = base_decryption_memory * 0.15 + 0.001
-                elif algorithm.upper() == '3DES':
+                elif algorithm_upper == '3DES':
                     # Triple DES decryption overhead
                     dec_overhead = base_decryption_memory * 0.35 + 0.0025
-                elif algorithm.upper() == 'BLOWFISH':
+                elif algorithm_upper == 'BLOWFISH':
                     # Blowfish decryption (reuses key schedule)
                     dec_overhead = base_decryption_memory * 0.2 + 0.0015
-                elif algorithm.upper() in ['SALSA20', 'CHACHA20']:
+                elif is_stream:
                     dec_overhead = base_decryption_memory * 0.08 + 0.0008
                 else:
                     dec_overhead = base_decryption_memory * 0.15 + 0.001
@@ -1973,8 +2656,8 @@ def benchmark():
             logger.info(f"Rankings - Time: #{time_rank + 1}/{total_algorithms}, Throughput: #{throughput_rank + 1}/{total_algorithms}, Memory: #{memory_rank + 1}/{total_algorithms}")
         
         result = {
-            'algorithm': algorithm.upper(),
-            'mode': mode.upper(),
+            'algorithm': algorithm_upper,
+            'mode': mode_upper,
             'iterations': iterations,
             'dataSize': len(data_bytes),
             'dataSizeMB': data_size_mb,

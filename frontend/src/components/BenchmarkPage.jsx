@@ -1,7 +1,211 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
 import { Clock, Cpu, TrendingUp, Zap, Activity, Target, FileText, Type, Play, Settings, BarChart3, Shield, Timer, Database, CheckCircle, AlertCircle, Info, Plus, Trash2, ChevronDown, X } from 'lucide-react';
 import { cryptoAPI } from '../services/api';
+
+const ALGORITHMS = {
+  'AES': {
+    name: 'Advanced Encryption Standard',
+    modes: ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB'],
+    description: 'Modern symmetric encryption standard with native GCM support',
+    security: 'High',
+    speed: 'Very Fast',
+    blockSize: '128-bit (16 bytes)',
+    keyLengths: '128, 192, 256-bit',
+    ivSize: '128-bit (CBC mode)',
+    parallelizable: 'Yes (CTR, GCM modes)',
+    color: '#10b981'
+  },
+  '3DES': {
+    name: 'Triple Data Encryption Standard',
+    modes: ['CBC', 'CFB', 'OFB', 'CTR', 'ECB'],
+    description: 'Legacy triple encryption (3 DES rounds) - deprecated standard',
+    security: 'Medium',
+    speed: 'Slow',
+    blockSize: '64-bit (8 bytes)',
+    keyLengths: '112, 168-bit (3 keys)',
+    ivSize: '64-bit (CBC mode)',
+    parallelizable: 'Limited',
+    color: '#f59e0b'
+  },
+  'BLOWFISH': {
+    name: 'Blowfish Cipher',
+    modes: ['CBC', 'CFB', 'OFB', 'CTR', 'ECB'],
+    description: 'Variable key-length block cipher with key-dependent S-boxes',
+    security: 'Medium',
+    speed: 'Medium',
+    blockSize: '64-bit (8 bytes)',
+    keyLengths: '32-448 bit variable',
+    ivSize: '64-bit (CBC mode)',
+    parallelizable: 'Limited',
+    color: '#8b5cf6'
+  },
+  'RC2': {
+    name: 'Rivest Cipher 2',
+    modes: ['CBC', 'ECB'],
+    description: 'Variable key-length legacy cipher - cryptographically weak',
+    security: 'Low',
+    speed: 'Very Slow',
+    blockSize: '64-bit (8 bytes)',
+    keyLengths: '40-128 bit variable',
+    ivSize: '64-bit (CBC mode)',
+    parallelizable: 'No',
+    color: '#ef4444'
+  },
+  'SM4': {
+    name: 'SM4 (Chinese National Standard)',
+    modes: ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB'],
+    description: 'Chinese national block cipher standard - secure for general use',
+    security: 'High',
+    speed: 'Medium',
+    blockSize: '128-bit (16 bytes)',
+    keyLengths: '128-bit fixed',
+    ivSize: '128-bit (16 bytes)',
+    parallelizable: 'Yes (CTR, GCM)',
+    color: '#dc2626'
+  },
+  'SALSA20': {
+    name: 'Salsa20 Stream Cipher',
+    modes: ['STREAM'],
+    description: 'Fast ARX-based stream cipher (8/12/20 rounds) that XORs a keystream with plaintext.',
+    security: 'High (20 rounds)',
+    speed: 'Extremely Fast',
+    blockSize: 'Stream (512-bit internal state)',
+    keyLengths: '128 or 256-bit',
+    ivSize: '64-bit nonce',
+    parallelizable: 'Yes',
+    color: '#be123c'
+  },
+  'CHACHA20': {
+    name: 'ChaCha20 Stream Cipher',
+    modes: ['STREAM'],
+    description: 'Modern stream cipher (RFC 8439) by D.J. Bernstein; typically paired with Poly1305.',
+    security: 'High (20 rounds)',
+    speed: 'Extremely Fast',
+    blockSize: 'Stream (512-bit internal state)',
+    keyLengths: '256-bit fixed',
+    ivSize: '96-bit nonce',
+    parallelizable: 'Yes',
+    color: '#f97316'
+  }
+  /*
+  , 'RAILFENCE': {
+    name: 'Rail Fence Cipher',
+    modes: ['RAILFENCE'],
+    description: 'Classical transposition cipher using zigzag rails (educational only).',
+    security: 'Low',
+    speed: 'Fast',
+    blockSize: 'N/A (transposition)',
+    keyLengths: 'Rails 2-64',
+    offset: '0+ (optional)',
+    ivSize: 'None',
+    parallelizable: 'No',
+    color: '#14b8a6'
+  }
+  , 'MORSE': {
+    name: 'Morse Code',
+    modes: ['MORSE'],
+    description: 'Symbol encoding with configurable dot/dash and delimiters (educational).',
+    security: 'Low',
+    speed: 'Fast',
+    blockSize: 'N/A (symbol encoding)',
+    keyLengths: 'No key (delimiters only)',
+    ivSize: 'None',
+    parallelizable: 'Yes',
+    color: '#22c55e'
+  }
+  */
+};
+
+const MODE_RECOMMENDATIONS = {
+  AES: {
+    CBC: 'Secure with random IV',
+    CFB: 'Good for streaming data',
+    OFB: 'Stream cipher mode',
+    CTR: 'Parallelizable, excellent performance',
+    GCM: 'Authenticated encryption - highly recommended',
+    ECB: 'Insecure - exposes patterns'
+  },
+  '3DES': {
+    CBC: 'Acceptable for legacy systems',
+    CFB: 'Stream-like but slow',
+    OFB: 'Output feedback mode',
+    CTR: 'Better than CBC but still deprecated',
+    ECB: 'Very insecure - pattern leakage'
+  },
+  BLOWFISH: {
+    CBC: 'Good performance, limited block size',
+    CFB: 'Stream mode with 64-bit blocks',
+    OFB: 'Feedback mode',
+    CTR: 'Counter mode, better parallelization',
+    ECB: 'Insecure - avoid pattern exposure'
+  },
+  RC2: {
+    CBC: 'Cryptographically weak algorithm',
+    ECB: 'Extremely insecure - double vulnerability'
+  },
+  SM4: {
+    CBC: 'Secure with random IV',
+    CFB: 'Stream-like mode',
+    OFB: 'Output feedback mode',
+    CTR: 'Parallelizable counter mode',
+    GCM: 'Authenticated encryption - recommended',
+    ECB: 'Insecure - exposes patterns'
+  },
+  SALSA20: {
+    STREAM: 'Use unique nonce per key; 20 rounds recommended'
+  }
+  /*
+  , RAILFENCE: {
+    RAILFENCE: 'Educational transposition cipher (not secure)'
+  }
+  , MORSE: {
+    MORSE: 'Dot/dash symbol encoding (not secure)'
+  }
+  */
+};
+
+const DATA_SIZE_OPTIONS = [
+  { value: 64, label: '64 bytes', category: 'Small' },
+  { value: 256, label: '256 bytes', category: 'Small' },
+  { value: 1024, label: '1 KB', category: 'Medium' },
+  { value: 4096, label: '4 KB', category: 'Medium' },
+  { value: 16384, label: '16 KB', category: 'Large' },
+  { value: 65536, label: '64 KB', category: 'Large' },
+  { value: 262144, label: '256 KB', category: 'XL' },
+  { value: 1048576, label: '1 MB', category: 'XL' }
+];
+
+const ITERATION_OPTIONS = [
+  { value: 5, label: '5 iterations', time: 'Quick' },
+  { value: 10, label: '10 iterations', time: 'Standard' },
+  { value: 25, label: '25 iterations', time: 'Detailed' },
+  { value: 50, label: '50 iterations', time: 'Thorough' },
+  { value: 100, label: '100 iterations', time: 'Comprehensive' }
+];
+
+const ALGORITHM_LABELS = {
+  'SALSA20': 'Salsa20',
+  'CHACHA20': 'ChaCha20'
+  /*
+  , 'RAILFENCE': 'Rail Fence'
+  , 'MORSE': 'Morse Code'
+  */
+};
+
+const RANDOM_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()_+-=[]{}|;:,.<>?';
+
+const generateRandomData = (size) => {
+  let result = '';
+  for (let i = 0; i < size; i++) {
+    result += RANDOM_CHARS.charAt(Math.floor(Math.random() * RANDOM_CHARS.length));
+  }
+  return result;
+};
+
+const getModeRecommendation = (algorithm, mode) => {
+  return MODE_RECOMMENDATIONS[algorithm]?.[mode] || 'Unknown combination';
+};
 const BenchmarkPage = () => {
   // State for algorithm-mode selections (array of objects with algorithm and mode)
   const [algorithmSelections, setAlgorithmSelections] = useState([
@@ -18,161 +222,6 @@ const BenchmarkPage = () => {
   const [benchmarkHistory, setBenchmarkHistory] = useState([]);
   const [scoringModel, setScoringModel] = useState('general');
   const [powerWatts, setPowerWatts] = useState(1);
-  // Available algorithms and their supported modes
-  const algorithms = {
-    'AES': {
-      name: 'Advanced Encryption Standard',
-      modes: ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB'],
-      description: 'Modern symmetric encryption standard with native GCM support',
-      security: 'High',
-      speed: 'Very Fast',
-      blockSize: '128-bit (16 bytes)',
-      keyLengths: '128, 192, 256-bit',
-      ivSize: '128-bit (CBC mode)',
-      parallelizable: 'Yes (CTR, GCM modes)',
-      color: '#10b981'
-    },
-    '3DES': {
-      name: 'Triple Data Encryption Standard',
-      modes: ['CBC', 'CFB', 'OFB', 'CTR', 'ECB'],
-      description: 'Legacy triple encryption (3 DES rounds) - deprecated standard',
-      security: 'Medium',
-      speed: 'Slow',
-      blockSize: '64-bit (8 bytes)',
-      keyLengths: '112, 168-bit (3 keys)',
-      ivSize: '64-bit (CBC mode)',
-      parallelizable: 'Limited',
-      color: '#f59e0b'
-    },
-    'BLOWFISH': {
-      name: 'Blowfish Cipher',
-      modes: ['CBC', 'CFB', 'OFB', 'CTR', 'ECB'],
-      description: 'Variable key-length block cipher with key-dependent S-boxes',
-      security: 'Medium',
-      speed: 'Medium',
-      blockSize: '64-bit (8 bytes)',
-      keyLengths: '32-448 bit variable',
-      ivSize: '64-bit (CBC mode)',
-      parallelizable: 'Limited',
-      color: '#8b5cf6'
-    },
-    'RC2': {
-      name: 'Rivest Cipher 2',
-      modes: ['CBC', 'ECB'],
-      description: 'Variable key-length legacy cipher - cryptographically weak',
-      security: 'Low',
-      speed: 'Very Slow',
-      blockSize: '64-bit (8 bytes)',
-      keyLengths: '40-128 bit variable',
-      ivSize: '64-bit (CBC mode)',
-      parallelizable: 'No',
-      color: '#ef4444'
-    },
-    'SM4': {
-      name: 'SM4 (Chinese National Standard)',
-      modes: ['CBC', 'CFB', 'OFB', 'CTR', 'GCM', 'ECB'],
-      description: 'Chinese national block cipher standard - secure for general use',
-      security: 'High',
-      speed: 'Medium',
-      blockSize: '128-bit (16 bytes)',
-      keyLengths: '128-bit fixed',
-      ivSize: '128-bit (16 bytes)',
-      parallelizable: 'Yes (CTR, GCM)',
-      color: '#dc2626'
-    },
-    'SALSA20': {
-      name: 'Salsa20 Stream Cipher',
-      modes: ['STREAM'],
-      description: 'Fast ARX-based stream cipher (8/12/20 rounds) that XORs a keystream with plaintext.',
-      security: 'High (20 rounds)',
-      speed: 'Extremely Fast',
-      blockSize: 'Stream (512-bit internal state)',
-      keyLengths: '128 or 256-bit',
-      ivSize: '64-bit nonce',
-      parallelizable: 'Yes',
-      color: '#be123c'
-    },
-    'CHACHA20': {
-      name: 'ChaCha20 Stream Cipher',
-      modes: ['STREAM'],
-      description: 'Modern stream cipher (RFC 8439) by D.J. Bernstein; typically paired with Poly1305.',
-      security: 'High (20 rounds)',
-      speed: 'Extremely Fast',
-      blockSize: 'Stream (512-bit internal state)',
-      keyLengths: '256-bit fixed',
-      ivSize: '96-bit nonce',
-      parallelizable: 'Yes',
-      color: '#f97316'
-    }
-  };
-  // Get mode-specific recommendation for algorithm-mode combination
-  const getModeRecommendation = (algorithm, mode) => {
-  const combinations = {
-    AES: {
-      CBC: 'Secure with random IV',
-      CFB: 'Good for streaming data',
-      OFB: 'Stream cipher mode',
-      CTR: 'Parallelizable, excellent performance',
-      GCM: 'Authenticated encryption - highly recommended',
-      ECB: 'Insecure - exposes patterns'
-    },
-    '3DES': {
-      CBC: 'Acceptable for legacy systems',
-      CFB: 'Stream-like but slow',
-      OFB: 'Output feedback mode',
-      CTR: 'Better than CBC but still deprecated',
-      ECB: 'Very insecure - pattern leakage'
-    },
-    BLOWFISH: {
-      CBC: 'Good performance, limited block size',
-      CFB: 'Stream mode with 64-bit blocks',
-      OFB: 'Feedback mode',
-      CTR: 'Counter mode, better parallelization',
-      ECB: 'Insecure - avoid pattern exposure'
-    },
-    RC2: {
-      CBC: 'Cryptographically weak algorithm',
-      ECB: 'Extremely insecure - double vulnerability'
-    },
-    SM4: {
-      CBC: 'Secure with random IV',
-      CFB: 'Stream-like mode',
-      OFB: 'Output feedback mode',
-      CTR: 'Parallelizable counter mode',
-      GCM: 'Authenticated encryption - recommended',
-      ECB: 'Insecure - exposes patterns'
-    },
-    SALSA20: {
-      STREAM: 'Use unique nonce per key; 20 rounds recommended'
-    }
-  };
-  return combinations[algorithm]?.[mode] || 'Unknown combination';
-};
-const dataSizeOptions = [
-    { value: 64, label: '64 bytes', category: 'Small' },
-    { value: 256, label: '256 bytes', category: 'Small' },
-    { value: 1024, label: '1 KB', category: 'Medium' },
-    { value: 4096, label: '4 KB', category: 'Medium' },
-    { value: 16384, label: '16 KB', category: 'Large' },
-    { value: 65536, label: '64 KB', category: 'Large' },
-    { value: 262144, label: '256 KB', category: 'XL' },
-    { value: 1048576, label: '1 MB', category: 'XL' }
-  ];
-  const iterationOptions = [
-    { value: 5, label: '5 iterations', time: 'Quick' },
-    { value: 10, label: '10 iterations', time: 'Standard' },
-    { value: 25, label: '25 iterations', time: 'Detailed' },
-    { value: 50, label: '50 iterations', time: 'Thorough' },
-    { value: 100, label: '100 iterations', time: 'Comprehensive' }
-  ];
-  const generateRandomData = (size) => {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()_+-=[]{}|;:,.<>?';
-    let result = '';
-    for (let i = 0; i < size; i++) {
-      result += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return result;
-  };
   const getTestData = () => {
     switch (testDataOption) {
       case 'random':
@@ -193,11 +242,7 @@ const dataSizeOptions = [
 
   const formatAlgorithmName = (alg) => {
     if (!alg) return '';
-    const map = {
-      'SALSA20': 'Salsa20',
-      'CHACHA20': 'ChaCha20'
-    };
-    return map[alg] || alg;
+    return ALGORITHM_LABELS[alg] || alg;
   };
   // Handle file upload and read as text
   const handleFileChange = (e) => {
@@ -215,16 +260,14 @@ const dataSizeOptions = [
   };
   const addAlgorithmSelection = () => {
     const newId = Math.max(...algorithmSelections.map(a => a.id)) + 1;
+    const usedCombinations = new Set(algorithmSelections.map(selection => `${selection.algorithm}-${selection.mode}`));
     // Find first available algorithm-mode combination
     let newAlgorithm = 'AES';
     let newMode = 'CBC';
-    for (const [alg, algInfo] of Object.entries(algorithms)) {
+    for (const [alg, algInfo] of Object.entries(ALGORITHMS)) {
       for (const mode of algInfo.modes) {
         const combination = `${alg}-${mode}`;
-        const isUsed = algorithmSelections.some(selection =>
-          selection.algorithm === alg && selection.mode === mode
-        );
-        if (!isUsed) {
+        if (!usedCombinations.has(combination)) {
           newAlgorithm = alg;
           newMode = mode;
           break;
@@ -246,28 +289,28 @@ const dataSizeOptions = [
         // Handle algorithm change
         if (field === 'algorithm') {
           // Reset mode if current mode not supported by new algorithm
-          if (!algorithms[value].modes.includes(selection.mode)) {
+          if (!ALGORITHMS[value].modes.includes(selection.mode)) {
             // Find first available mode for this algorithm
-            const availableModes = algorithms[value].modes.filter(mode => {
+            const availableModes = ALGORITHMS[value].modes.filter(mode => {
               const wouldBeDuplicate = algorithmSelections.some(other =>
                 other.id !== id && other.algorithm === value && other.mode === mode
               );
               return !wouldBeDuplicate;
             });
-            updated.mode = availableModes[0] || algorithms[value].modes[0];
+            updated.mode = availableModes[0] || ALGORITHMS[value].modes[0];
           } else {
             // Check if current mode would create duplicate
             const wouldBeDuplicate = algorithmSelections.some(other =>
               other.id !== id && other.algorithm === value && other.mode === selection.mode
             );
             if (wouldBeDuplicate) {
-              const availableModes = algorithms[value].modes.filter(mode => {
+              const availableModes = ALGORITHMS[value].modes.filter(mode => {
                 const isDuplicate = algorithmSelections.some(other =>
                   other.id !== id && other.algorithm === value && other.mode === mode
                 );
                 return !isDuplicate;
               });
-              updated.mode = availableModes[0] || algorithms[value].modes[0];
+              updated.mode = availableModes[0] || ALGORITHMS[value].modes[0];
             }
           }
         }
@@ -287,7 +330,7 @@ const dataSizeOptions = [
       return selection;
     }));
   };
-  const getChartData = () => {
+  const chartData = useMemo(() => {
     try {
       if (!results || !Array.isArray(results)) return [];
       const successfulResults = results.filter(r => !r.error);
@@ -308,21 +351,15 @@ const dataSizeOptions = [
           encryptionMemory: Number(result.memory?.encryption?.avgMB) || 0,
           decryptionMemory: Number(result.memory?.decryption?.avgMB) || 0,
           efficiencyScore: Number(result.memory?.summary?.efficiencyScore) || 0,
-          color: algorithms[result.algorithm]?.color || '#6b7280'
+          color: ALGORITHMS[result.algorithm]?.color || '#6b7280'
         };
       });
     } catch (error) {
       console.error('Error generating chart data:', error);
       return [];
     }
-  };
-  const getHistoryChartData = () => {
-    return benchmarkHistory.map((entry, index) => ({
-      timestamp: `Run ${index + 1}`,
-      encryption: entry.encryption || 0,
-      decryption: entry.decryption || 0
-    }));
-  };
+  }, [results]);
+
   const runBenchmark = useCallback(async () => {
     // Prevent multiple simultaneous benchmark runs
     if (isRunning) {
@@ -368,7 +405,7 @@ const dataSizeOptions = [
               algorithm: selection.algorithm,
               mode: selection.mode,
               ...result,
-              color: algorithms[selection.algorithm]?.color || '#6b7280'
+              color: ALGORITHMS[selection.algorithm]?.color || '#6b7280'
             });
           } else {
             const errorMsg = response?.error || 'Unknown error occurred';
@@ -379,7 +416,7 @@ const dataSizeOptions = [
               algorithm: selection.algorithm,
               mode: selection.mode,
               error: errorMsg,
-              color: algorithms[selection.algorithm]?.color || '#6b7280'
+              color: ALGORITHMS[selection.algorithm]?.color || '#6b7280'
             });
           }
         } catch (error) {
@@ -390,7 +427,7 @@ const dataSizeOptions = [
             algorithm: selection.algorithm,
             mode: selection.mode,
             error: error.message || 'Network or processing error',
-            color: algorithms[selection.algorithm]?.color || '#6b7280'
+            color: ALGORITHMS[selection.algorithm]?.color || '#6b7280'
           });
         }
       }
@@ -425,7 +462,7 @@ const dataSizeOptions = [
     } finally {
       setIsRunning(false);
     }
-  }, [algorithmSelections, iterations, testDataOption, customTestData, randomDataSize, algorithms]);
+  }, [algorithmSelections, iterations, testDataOption, customTestData, randomDataSize]);
   const formatBytes = (bytes) => {
     if (bytes === 0) return '0 B';
     const k = 1024;
@@ -470,13 +507,13 @@ const dataSizeOptions = [
   };
   // Get available modes for an algorithm (excluding already used combinations)
   const getAvailableModes = (algorithm, currentId) => {
-    return algorithms[algorithm]?.modes.filter(mode =>
+    return ALGORITHMS[algorithm]?.modes.filter(mode =>
       !isCombinationUsed(algorithm, mode, currentId)
     ) || [];
   };
   // Check if we can add more algorithm selections (maximum 5)
   const canAddMoreSelections = () => {
-    const totalPossibleCombinations = Object.entries(algorithms).reduce((total, [alg, algInfo]) => {
+    const totalPossibleCombinations = Object.entries(ALGORITHMS).reduce((total, [alg, algInfo]) => {
       return total + algInfo.modes.length;
     }, 0);
     return algorithmSelections.length < Math.min(5, totalPossibleCombinations);
@@ -543,7 +580,7 @@ return (
                 <div className="mt-2 bg-gray-200 p-3 rounded text-xs">
                   <div className="space-y-2">
                     <div><strong>Results Count:</strong> {results.length}</div>
-                    <div><strong>Chart Data Count:</strong> {getChartData().length}</div>
+                    <div><strong>Chart Data Count:</strong> {chartData.length}</div>
                     <div><strong>Successful Results:</strong> {results.filter(r => !r.error).length}</div>
                     <div><strong>Failed Results:</strong> {results.filter(r => r.error).length}</div>
                     <div><strong>Average Efficiency:</strong> {results.filter(r => !r.error).length > 0 ?
@@ -557,11 +594,11 @@ return (
                         </pre>
                       </details>
                     )}
-                    {getChartData().length > 0 && (
+                    {chartData.length > 0 && (
                       <details>
                         <summary className="cursor-pointer text-blue-600">View Chart Data</summary>
                         <pre className="mt-1 text-xs overflow-x-auto bg-white p-2 rounded border">
-                          {JSON.stringify(getChartData(), null, 2)}
+                          {JSON.stringify(chartData, null, 2)}
                         </pre>
                       </details>
                     )}
@@ -693,9 +730,9 @@ return (
                   <h3 className="text-lg font-semibold text-gray-900">Time Performance</h3>
                 </div>
                                   <div className="h-64">
-                    {getChartData().length > 0 ? (
+                    {chartData.length > 0 ? (
                       <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={getChartData()} margin={{ top: 20, right: 30, left: 20, bottom: 40 }}>
+                        <BarChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 40 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                           <XAxis
                             dataKey="name"
@@ -737,9 +774,9 @@ return (
                   <h3 className="text-lg font-semibold text-gray-900">Throughput</h3>
                 </div>
                   <div className="h-64">
-                    {getChartData().length > 0 ? (
+                    {chartData.length > 0 ? (
                     <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={getChartData()} margin={{ top: 20, right: 30, left: 20, bottom: 40 }}>
+                        <BarChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 40 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                         <XAxis
                           dataKey="name"
@@ -777,9 +814,9 @@ return (
                   <h3 className="text-lg font-semibold text-gray-900">Memory Usage</h3>
                 </div>
                   <div className="h-64">
-                    {getChartData().length > 0 ? (
+                    {chartData.length > 0 ? (
                     <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={getChartData()} margin={{ top: 20, right: 30, left: 20, bottom: 40 }}>
+                        <BarChart data={chartData} margin={{ top: 20, right: 30, left: 20, bottom: 40 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                         <XAxis
                           dataKey="name"
@@ -821,7 +858,7 @@ return (
                   <h3 className="text-lg font-semibold text-gray-900">Efficiency Score</h3>
                 </div>
                   <div className="h-64">
-                    {getChartData().length > 0 ? (
+                    {chartData.length > 0 ? (
                     <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={results.filter(r => !r.error).map(result => ({
                           name: (result.combinationName || 'Unknown').replace('-', '\n'),
@@ -962,7 +999,7 @@ return (
                         ? 'bg-yellow-100 text-yellow-800'
                         : 'bg-blue-100 text-blue-800'
                     }`}>
-                      {algorithmSelections.length} of {Math.min(5, Object.entries(algorithms).reduce((total, [alg, algInfo]) => total + algInfo.modes.length, 0))} algorithms
+                      {algorithmSelections.length} of {Math.min(5, Object.entries(ALGORITHMS).reduce((total, [alg, algInfo]) => total + algInfo.modes.length, 0))} algorithms
                     </span>
                     {results && results.length > 0 && (
                       <span className="px-2 py-1 text-xs font-medium bg-amber-100 text-amber-800 rounded-full">
@@ -1026,7 +1063,7 @@ return (
                           onChange={(e) => updateAlgorithmSelection(selection.id, 'algorithm', e.target.value)}
                           className="w-full appearance-none bg-white border border-gray-300 px-3 py-2 pr-8 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                         >
-                          {Object.entries(algorithms).map(([key, algo]) => {
+                          {Object.entries(ALGORITHMS).map(([key, algo]) => {
                             const hasAvailableModes = algo.modes.some(mode =>
                               !isCombinationUsed(key, mode, selection.id)
                             );
@@ -1049,7 +1086,7 @@ return (
                           onChange={(e) => updateAlgorithmSelection(selection.id, 'mode', e.target.value)}
                           className="w-full appearance-none bg-white border border-gray-300 px-3 py-2 pr-8 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                         >
-                          {algorithms[selection.algorithm]?.modes.map((mode) => {
+                          {ALGORITHMS[selection.algorithm]?.modes.map((mode) => {
                             const isUsed = isCombinationUsed(selection.algorithm, mode, selection.id);
                             return (
                               <option key={mode} value={mode} disabled={isUsed}>
@@ -1063,19 +1100,19 @@ return (
                     </div>
                     {/* Algorithm Info */}
                     <div className="flex-1">
-                      <div className="text-xs text-gray-600 mb-2">{algorithms[selection.algorithm]?.description}</div>
+                      <div className="text-xs text-gray-600 mb-2">{ALGORITHMS[selection.algorithm]?.description}</div>
                       <div className="flex flex-wrap gap-1 mb-2">
-                        <span className={`px-2 py-1 text-xs font-medium rounded-full border ${getSecurityBadgeColor(algorithms[selection.algorithm]?.security)}`}>
-                          {algorithms[selection.algorithm]?.security} Security
+                        <span className={`px-2 py-1 text-xs font-medium rounded-full border ${getSecurityBadgeColor(ALGORITHMS[selection.algorithm]?.security)}`}>
+                          {ALGORITHMS[selection.algorithm]?.security} Security
                         </span>
-                        <span className={`px-2 py-1 text-xs font-medium rounded-full border ${getSpeedBadgeColor(algorithms[selection.algorithm]?.speed)}`}>
-                          {algorithms[selection.algorithm]?.speed}
+                        <span className={`px-2 py-1 text-xs font-medium rounded-full border ${getSpeedBadgeColor(ALGORITHMS[selection.algorithm]?.speed)}`}>
+                          {ALGORITHMS[selection.algorithm]?.speed}
                         </span>
                       </div>
                                             <div className="text-xs space-y-1">
-                        <div><span className="font-medium">Block:</span> {algorithms[selection.algorithm]?.blockSize}</div>
-                        <div><span className="font-medium">Keys:</span> {algorithms[selection.algorithm]?.keyLengths}</div>
-                        <div><span className="font-medium">IV:</span> {algorithms[selection.algorithm]?.ivSize}</div>
+                        <div><span className="font-medium">Block:</span> {ALGORITHMS[selection.algorithm]?.blockSize}</div>
+                        <div><span className="font-medium">Keys:</span> {ALGORITHMS[selection.algorithm]?.keyLengths}</div>
+                        <div><span className="font-medium">IV:</span> {ALGORITHMS[selection.algorithm]?.ivSize}</div>
                         <div className={`font-medium ${getRecommendationColor(getModeRecommendation(selection.algorithm, selection.mode))}`}>
                           {getModeRecommendation(selection.algorithm, selection.mode)}
                         </div>
@@ -1085,7 +1122,7 @@ return (
                     <div className="flex-shrink-0 flex flex-col items-center space-y-1">
                       <div
                         className="w-4 h-4 rounded-full border-2 border-white shadow-sm"
-                        style={{ backgroundColor: algorithms[selection.algorithm]?.color }}
+                        style={{ backgroundColor: ALGORITHMS[selection.algorithm]?.color }}
                       ></div>
                       <CheckCircle className="w-3 h-3 text-green-500" />
                     </div>
@@ -1213,7 +1250,7 @@ return (
                   onChange={(e) => setRandomDataSize(parseInt(e.target.value))}
                         className="w-full appearance-none bg-white border border-gray-300 px-3 py-2 pr-8 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 >
-                  {dataSizeOptions.map((option) => (
+                  {DATA_SIZE_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>
                             {option.label} ({option.category})
                     </option>
@@ -1238,7 +1275,7 @@ return (
                       onChange={(e) => setIterations(parseInt(e.target.value))}
                       className="w-full appearance-none bg-white border border-gray-300 px-3 py-2 pr-8 rounded focus:ring-2 focus:ring-purple-500 focus:border-transparent"
                     >
-                      {iterationOptions.map((option) => (
+                      {ITERATION_OPTIONS.map((option) => (
                         <option key={option.value} value={option.value}>
                           {option.label} ({option.time})
                         </option>
