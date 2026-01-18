@@ -16,4 +16,5 @@ App: `http://localhost:3000`
 ## What you can do
 - Encrypt and decrypt across multiple algorithms
 - Generate keys, IVs, and nonces
+- Hash passwords with bcrypt and generate common hashes
 - Benchmark algorithms with scoring models

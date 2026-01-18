@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-const AlgorithmSelector = ({ selectedAlgorithm, onAlgorithmChange }) => {
+const AlgorithmSelector = ({ selectedAlgorithm, onAlgorithmChange, allowedAlgorithms }) => {
   const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
   const [hoveredAlgorithm, setHoveredAlgorithm] = useState(null);
 
@@ -18,14 +18,18 @@ const AlgorithmSelector = ({ selectedAlgorithm, onAlgorithmChange }) => {
   };
   const displayNames = {
     'AES': 'AES',
+    'DES': 'DES',
     '3DES': '3DES',
     'BLOWFISH': 'Blowfish',
     'RC2': 'RC2',
     'SM4': 'SM4',
     'SALSA20': 'Salsa20',
     'CHACHA20': 'ChaCha20',
+    'RC4': 'RC4',
+    'RC4DROP': 'RC4 Drop',
     'RAILFENCE': 'Rail Fence',
-    'MORSE': 'Morse Code'
+    'MORSE': 'Morse Code',
+    'VIGENERE': 'Vigenere'
   };
   const algorithmInfo = {
     'AES': {
@@ -38,6 +42,18 @@ const AlgorithmSelector = ({ selectedAlgorithm, onAlgorithmChange }) => {
       ],
       keyGeneration: 'You can generate a password-based key using one of the KDF operations.',
       iv: 'The Initialization Vector should be 16 bytes long. If not entered, it will default to 16 null bytes.',
+      padding: 'In CBC and ECB mode, PKCS#7 padding will be used.'
+    },
+    'DES': {
+      name: 'Data Encryption Standard (DES)',
+      description: 'DES is a 64-bit block cipher standardized as FIPS 46. It uses a 56-bit effective key and 16-round Feistel network, and is now considered insecure.',
+      keyInfo: [
+        '64-bit key (8 bytes) with 56-bit effective security',
+        '8 parity bits (1 per byte)',
+        'Weak and semi-weak keys exist; avoid known values'
+      ],
+      keyGeneration: 'Use a random 8-byte key; parity bits are typically ignored by modern libraries.',
+      iv: 'The Initialization Vector should be 8 bytes long for CBC, CFB, OFB, and CTR modes.',
       padding: 'In CBC and ECB mode, PKCS#7 padding will be used.'
     },
     '3DES': {
@@ -112,6 +128,30 @@ const AlgorithmSelector = ({ selectedAlgorithm, onAlgorithmChange }) => {
       iv: 'Nonce is 12 bytes; counter sets keystream block start.',
       padding: 'No padding (stream cipher).'
     },
+    'RC4': {
+      name: 'RC4 (Rivest Cipher 4)',
+      description: 'RC4 is a stream cipher designed by Ron Rivest in 1987. It is fast and simple but deprecated due to keystream biases. RC4-drop discards the initial keystream dwords to reduce bias.',
+      keyInfo: [
+        'Passphrase/key length: 1-256 bytes (8-2048 bits)',
+        'Longer random keys increase security',
+        'RC4-drop: discard 768 or 1024 dwords (x4 bytes) to reduce bias'
+      ],
+      keyGeneration: 'Use a random passphrase; RC4 has no IV or nonce.',
+      iv: 'No IV or nonce required.',
+      padding: 'No padding (stream cipher).'
+    },
+    'RC4DROP': {
+      name: 'RC4 Drop (RC4-drop[N])',
+      description: 'RC4-drop discards the first N dwords of the keystream to reduce early-output bias. It remains deprecated for modern security.',
+      keyInfo: [
+        'Passphrase/key length: 1-256 bytes (8-2048 bits)',
+        'Drop values: 768 or 1024 dwords are common',
+        'Same key/keystream rules as RC4'
+      ],
+      keyGeneration: 'Use a random passphrase; RC4-drop has no IV or nonce.',
+      iv: 'No IV or nonce required.',
+      padding: 'No padding (stream cipher).'
+    },
     'RAILFENCE': {
       name: 'Rail Fence Cipher',
       description: 'Rail Fence is a classical transposition cipher that writes text in a zigzag across rails and reads row by row.',
@@ -137,12 +177,54 @@ const AlgorithmSelector = ({ selectedAlgorithm, onAlgorithmChange }) => {
       keyGeneration: 'No key required. Configure delimiters and dot/dash symbols.',
       iv: 'No IV or nonce required.',
       padding: 'No padding (symbol encoding).'
+    },
+    'VIGENERE': {
+      name: 'Vigenere Cipher',
+      description: 'Vigenere is a polyalphabetic substitution cipher that shifts each letter by a repeating keyword.',
+      keyInfo: [
+        'Keyword uses letters A-Z only',
+        'Plaintext and key are uppercased',
+        'Spaces and symbols are removed'
+      ],
+      keyGeneration: 'Choose a keyword; longer keys reduce repetition patterns.',
+      iv: 'No IV or nonce required.',
+      padding: 'No padding (letters only).'
     }
   };
 
+  const allowedSet = allowedAlgorithms ? new Set(allowedAlgorithms) : null;
+  const filteredAlgorithms = Object.entries(algorithmInfo).filter(([algorithm]) => (
+    !allowedSet || allowedSet.has(algorithm)
+  ));
+  const tooltipLines = hoveredAlgorithm
+    ? (() => {
+        const info = algorithmInfo[hoveredAlgorithm];
+        if (!info) return [];
+        const lines = [];
+        if (info.description) {
+          lines.push(info.description);
+        }
+        if (info.keyInfo && info.keyInfo.length) {
+          info.keyInfo.forEach((item) => {
+            lines.push(`Key: ${item}`);
+          });
+        }
+        if (info.keyGeneration) {
+          lines.push(`Key generation: ${info.keyGeneration}`);
+        }
+        if (info.iv) {
+          lines.push(`IV: ${info.iv}`);
+        }
+        if (info.padding) {
+          lines.push(`Padding: ${info.padding}`);
+        }
+        return lines;
+      })()
+    : [];
+
   return (
     <div className="space-y-4 relative" style={{ zIndex: 10 }}>
-      {Object.entries(algorithmInfo).map(([algorithm, info]) => (
+      {filteredAlgorithms.map(([algorithm, info]) => (
         <div
           key={algorithm}
           onClick={() => onAlgorithmChange(algorithm)}
@@ -160,71 +242,38 @@ const AlgorithmSelector = ({ selectedAlgorithm, onAlgorithmChange }) => {
       
       {/* Fixed positioned tooltip */}
       {hoveredAlgorithm && (
-        <div 
-          className="fixed bg-white border border-gray-300 rounded-lg shadow-xl p-4 text-left normal-case tracking-normal z-[99999] max-w-xs"
+        <div
+          className="fixed z-[99999] max-w-xs"
           style={{
-          left: `${Math.max(10, Math.min(tooltipPosition.x, window.innerWidth - 340))}px`,
-          top: `${Math.max(10, Math.min(tooltipPosition.y - 130, window.innerHeight - 260))}px`, // center-ish around hover point
-          pointerEvents: 'none',
-          maxHeight: '70vh',
-          overflowY: 'auto'
+            left: Math.max(
+              12,
+              Math.min(
+                tooltipPosition.x,
+                (typeof window !== 'undefined' ? window.innerWidth : 1024) - 340
+              )
+            ),
+            top: Math.max(
+              12,
+              Math.min(
+                tooltipPosition.y - 80,
+                (typeof window !== 'undefined' ? window.innerHeight : 768) - 240
+              )
+            ),
+            pointerEvents: 'none'
           }}
         >
-          {/* Arrow pointing left */}
-          <div className="absolute right-full top-4">
-            <div className="w-0 h-0" style={{
-              borderTop: '8px solid transparent',
-              borderBottom: '8px solid transparent', 
-              borderRight: '8px solid #d1d5db'
-            }}></div>
-            <div className="absolute top-0 right-0 w-0 h-0" style={{
-              borderTop: '7px solid transparent',
-              borderBottom: '7px solid transparent',
-              borderRight: '7px solid white',
-              marginRight: '-1px'
-            }}></div>
-          </div>
-          
-          <div className="text-sm font-bold text-gray-900 mb-2 border-b border-gray-200 pb-2">
-            {algorithmInfo[hoveredAlgorithm]?.name}
-          </div>
-          
-          <div className="text-xs text-gray-700 mb-3 leading-relaxed">
-            {algorithmInfo[hoveredAlgorithm]?.description}
-          </div>
-          
-          <div className="space-y-2">
-            <div>
-              <div className="text-xs font-semibold text-blue-700 mb-1">
-                Key:
-              </div>
-              <div className="text-xs text-gray-600 pl-2">
-                {algorithmInfo[hoveredAlgorithm]?.keyInfo.map((keyDetail, index) => (
-                  <div key={index} className="mb-0.5">• {keyDetail}</div>
-                ))}
-              </div>
+          <div className="relative rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-700 shadow-xl">
+            <div className="absolute right-full top-6">
+              <div className="w-0 h-0 border-y-[8px] border-y-transparent border-r-[8px] border-r-gray-200"></div>
+              <div className="absolute top-[1px] right-0 w-0 h-0 border-y-[7px] border-y-transparent border-r-[7px] border-r-white"></div>
             </div>
-            
-            <div className="text-xs text-gray-600 italic bg-gray-50 p-2 rounded">
-              {algorithmInfo[hoveredAlgorithm]?.keyGeneration}
+            <div className="text-sm font-semibold text-gray-900 mb-2">
+              {algorithmInfo[hoveredAlgorithm]?.name}
             </div>
-            
-            <div>
-              <div className="text-xs font-semibold text-blue-700 mb-1">
-                IV:
-              </div>
-              <div className="text-xs text-gray-600 pl-2">
-                {algorithmInfo[hoveredAlgorithm]?.iv}
-              </div>
-            </div>
-            
-            <div>
-              <div className="text-xs font-semibold text-blue-700 mb-1">
-                Padding:
-              </div>
-              <div className="text-xs text-gray-600 pl-2">
-                {algorithmInfo[hoveredAlgorithm]?.padding}
-              </div>
+            <div className="space-y-1">
+              {tooltipLines.map((line, index) => (
+                <div key={`${hoveredAlgorithm}-info-${index}`}>{line}</div>
+              ))}
             </div>
           </div>
         </div>

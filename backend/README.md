@@ -20,6 +20,12 @@ Server: `http://localhost:5000`
 - `POST /encrypt` encrypt data
 - `POST /decrypt` decrypt data
 - `POST /generate` key/nonce helper
+- `POST /hash` hash data (bcrypt + classic hashes)
+- `POST /verify` verify a hash
+- `POST /jwt/sign` sign a JSON payload as a JWT
+- `POST /jwt/verify` verify a JWT signature and claims
+- `POST /jwt/decode` decode a JWT without verifying the signature
+- `POST /hash/all` generate multiple hashes for one input
 - `POST /benchmark` performance benchmark
 
 See the frontend for the full interactive experience.

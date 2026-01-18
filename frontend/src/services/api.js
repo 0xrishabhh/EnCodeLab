@@ -26,7 +26,9 @@ export const cryptoAPI = {
           dot_symbol: data.dot_symbol,
           dash_symbol: data.dash_symbol,
           rounds: data.rounds,
-          counter: data.counter
+          counter: data.counter,
+          drop: data.drop,
+          drop_unit: data.drop_unit
         })
       });
 
@@ -46,6 +48,7 @@ export const cryptoAPI = {
         keyGenerated: result.result.key_generated,
         keyFormat: result.result.key_format,
         ivFormat: result.result.iv_format,
+        drop: result.result.drop,
         caseSequence: result.result.case_sequence,
         algorithm: result.result.algorithm,
         mode: result.result.mode,
@@ -86,7 +89,9 @@ export const cryptoAPI = {
           dash_symbol: data.dash_symbol,
           case_sequence: data.case_sequence,
           rounds: data.rounds,
-          counter: data.counter
+          counter: data.counter,
+          drop: data.drop,
+          drop_unit: data.drop_unit
         })
       });
 
@@ -104,12 +109,231 @@ export const cryptoAPI = {
         caseSequence: result.result.case_sequence,
         keyFormat: result.result.key_format,
         ivFormat: result.result.iv_format,
+        drop: result.result.drop,
         algorithm: result.result.algorithm,
         mode: result.result.mode,
         executionTime: result.result.executionTime
       };
     } catch (error) {
       console.error('Decryption error:', error);
+      return {
+        success: false,
+        error: error.message || 'Network error occurred'
+      };
+    }
+  },
+
+  async hash(data) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/hash`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          algorithm: data.algorithm,
+          data: data.input,
+          inputFormat: data.inputFormat || 'UTF-8',
+          outputFormat: data.outputFormat || 'HEX',
+          rounds: data.rounds,
+          cost: data.cost,
+          length: data.length,
+          size: data.size,
+          levels: data.levels,
+          key: data.key
+        })
+      });
+
+      const result = await response.json();
+      if (result.status !== 'success') {
+        throw new Error(result.error || 'Hashing failed');
+      }
+
+      return {
+        success: true,
+        result: result.result
+      };
+    } catch (error) {
+      console.error('Hashing error:', error);
+      return {
+        success: false,
+        error: error.message || 'Network error occurred'
+      };
+    }
+  },
+
+  async verifyHash(data) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/verify`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          algorithm: data.algorithm,
+          data: data.input,
+          hash: data.hash,
+          inputFormat: data.inputFormat || 'UTF-8',
+          hashFormat: data.hashFormat || 'HEX',
+          rounds: data.rounds,
+          cost: data.cost,
+          length: data.length,
+          size: data.size,
+          levels: data.levels,
+          key: data.key
+        })
+      });
+
+      const result = await response.json();
+      if (result.status !== 'success') {
+        throw new Error(result.error || 'Verification failed');
+      }
+
+      return {
+        success: true,
+        result: result.result
+      };
+    } catch (error) {
+      console.error('Verify hash error:', error);
+      return {
+        success: false,
+        error: error.message || 'Network error occurred'
+      };
+    }
+  },
+
+  async jwtSign(data) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/jwt/sign`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          payload: data.payload,
+          key: data.key,
+          algorithm: data.algorithm,
+          headers: data.headers
+        })
+      });
+
+      const result = await response.json();
+      if (result.status !== 'success') {
+        throw new Error(result.error || 'JWT sign failed');
+      }
+
+      return {
+        success: true,
+        result: result.result
+      };
+    } catch (error) {
+      console.error('JWT sign error:', error);
+      return {
+        success: false,
+        error: error.message || 'Network error occurred'
+      };
+    }
+  },
+
+  async jwtVerify(data) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/jwt/verify`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          token: data.token,
+          key: data.key,
+          algorithm: data.algorithm,
+          audience: data.audience,
+          issuer: data.issuer,
+          leeway: data.leeway,
+          verify_exp: data.verify_exp,
+          verify_nbf: data.verify_nbf,
+          verify_iat: data.verify_iat
+        })
+      });
+
+      const result = await response.json();
+      if (result.status !== 'success') {
+        throw new Error(result.error || 'JWT verify failed');
+      }
+
+      return {
+        success: true,
+        result: result.result
+      };
+    } catch (error) {
+      console.error('JWT verify error:', error);
+      return {
+        success: false,
+        error: error.message || 'Network error occurred'
+      };
+    }
+  },
+
+  async jwtDecode(data) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/jwt/decode`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          token: data.token
+        })
+      });
+
+      const result = await response.json();
+      if (result.status !== 'success') {
+        throw new Error(result.error || 'JWT decode failed');
+      }
+
+      return {
+        success: true,
+        result: result.result
+      };
+    } catch (error) {
+      console.error('JWT decode error:', error);
+      return {
+        success: false,
+        error: error.message || 'Network error occurred'
+      };
+    }
+  },
+
+  async hashAll(data) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/hash/all`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          data: data.input,
+          inputFormat: data.inputFormat || 'UTF-8',
+          outputFormat: data.outputFormat || 'HEX',
+          algorithms: data.algorithms,
+          include_bcrypt: data.includeBcrypt,
+          length: data.length,
+          md6_size: data.md6Size ?? data.size,
+          md6_levels: data.md6Levels ?? data.levels,
+          md6_key: data.md6Key ?? data.key
+        })
+      });
+
+      const result = await response.json();
+      if (result.status !== 'success') {
+        throw new Error(result.error || 'Hash-all failed');
+      }
+
+      return {
+        success: true,
+        result: result.result
+      };
+    } catch (error) {
+      console.error('Hash-all error:', error);
       return {
         success: false,
         error: error.message || 'Network error occurred'
@@ -178,7 +402,12 @@ export const cryptoAPI = {
           ...(data.word_delimiter !== undefined ? { word_delimiter: data.word_delimiter } : {}),
           ...(data.dot_symbol !== undefined ? { dot_symbol: data.dot_symbol } : {}),
           ...(data.dash_symbol !== undefined ? { dash_symbol: data.dash_symbol } : {}),
-          ...(data.rounds ? { rounds: data.rounds } : {})
+            ...(data.rounds ? { rounds: data.rounds } : {}),
+            ...(data.drop !== undefined ? { drop: data.drop } : {}),
+            ...(data.drop_unit !== undefined ? { drop_unit: data.drop_unit } : {}),
+            ...(data.md6Size !== undefined ? { md6_size: data.md6Size } : {}),
+          ...(data.md6Levels !== undefined ? { md6_levels: data.md6Levels } : {}),
+          ...(data.md6Key !== undefined ? { md6_key: data.md6Key } : {})
         })
       });
 

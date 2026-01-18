@@ -76,6 +76,8 @@ def test_encryption_decryption(algorithm, mode, encoding, plaintext, key=None, e
                 decrypt_data['rounds'] = extra['rounds']
             if 'counter' in extra:
                 decrypt_data['counter'] = extra['counter']
+            if 'drop' in extra:
+                decrypt_data['drop'] = extra['drop']
             if 'offset' in extra:
                 decrypt_data['offset'] = extra['offset']
             if 'letter_delimiter' in extra:
@@ -108,6 +110,47 @@ def test_encryption_decryption(algorithm, mode, encoding, plaintext, key=None, e
         return False
 
 
+def test_bcrypt_hashing(password, rounds=10):
+    """Test bcrypt hashing and verification"""
+    print(f"\n[TEST] BCRYPT hashing with cost {rounds}...")
+    try:
+        hash_response = requests.post(f'{BASE_URL}/hash', json={
+            'algorithm': 'BCRYPT',
+            'data': password,
+            'inputFormat': 'UTF-8',
+            'rounds': rounds
+        })
+
+        if hash_response.status_code != 200:
+            print(f"[ERR] Hashing failed: {hash_response.json()}")
+            return False
+
+        hash_result = hash_response.json()['result']
+        hashed_value = hash_result['hash']
+        print(f"   [HASH] {hashed_value[:20]}... (truncated)")
+
+        verify_response = requests.post(f'{BASE_URL}/verify', json={
+            'algorithm': 'BCRYPT',
+            'data': password,
+            'hash': hashed_value,
+            'inputFormat': 'UTF-8'
+        })
+
+        if verify_response.status_code != 200:
+            print(f"[ERR] Verify failed: {verify_response.json()}")
+            return False
+
+        verified = verify_response.json()['result']['verified']
+        if verified:
+            print("   [OK] bcrypt verification successful!")
+            return True
+        print("   [ERR] bcrypt verification failed!")
+        return False
+    except Exception as e:
+        print(f"[ERR] bcrypt test failed with exception: {e}")
+        return False
+
+
 def main():
     """Run all tests"""
     print("[START] EnCodeLab Crypto Backend Tests...")
@@ -117,6 +160,10 @@ def main():
         sys.exit(1)
 
     test_cases = [
+        # DES modes
+        {'algorithm': 'DES', 'mode': 'ECB', 'encoding': 'RAW', 'plaintext': 'Hello, DES!'},
+        {'algorithm': 'DES', 'mode': 'CBC', 'encoding': 'RAW', 'plaintext': 'Hello, DES!'},
+        {'algorithm': 'DES', 'mode': 'CTR', 'encoding': 'RAW', 'plaintext': 'Hello, DES!'},
         # SM4 modes
         {'algorithm': 'SM4', 'mode': 'CBC', 'encoding': 'HEX', 'plaintext': '48656c6c6f2c20576f726c6421'},
         {'algorithm': 'SM4', 'mode': 'CBC', 'encoding': 'RAW', 'plaintext': 'Hello, World!'},
@@ -136,14 +183,19 @@ def main():
         # ChaCha20 stream cipher
         {'algorithm': 'CHACHA20', 'mode': 'STREAM', 'encoding': 'RAW', 'plaintext': 'Hello, ChaCha20!', 'extra': {'rounds': 20, 'counter': 1}},
         {'algorithm': 'CHACHA20', 'mode': 'STREAM', 'encoding': 'HEX', 'plaintext': '48656c6c6f2c20436861436861323021', 'extra': {'rounds': 12, 'counter': 0}},
+        # RC4 stream cipher
+        {'algorithm': 'RC4', 'mode': 'STREAM', 'encoding': 'RAW', 'plaintext': 'Hello, RC4!', 'key': 'secret', 'extra': {'drop': 0}},
+        {'algorithm': 'RC4', 'mode': 'STREAM', 'encoding': 'RAW', 'plaintext': 'Hello, RC4 Drop!', 'key': 'secret', 'extra': {'drop': 768}},
         # Rail Fence cipher
         {'algorithm': 'RAILFENCE', 'mode': 'RAILFENCE', 'encoding': 'RAW', 'plaintext': 'HELLO RAILFENCE', 'extra': {'offset': 2}},
         # Morse Code
         {'algorithm': 'MORSE', 'mode': 'MORSE', 'encoding': 'RAW', 'plaintext': 'HELLO WORLD', 'extra': {'letter_delimiter': ' ', 'word_delimiter': '\n', 'dot_symbol': '.', 'dash_symbol': '-'}},
+        # Vigenere Cipher
+        {'algorithm': 'VIGENERE', 'mode': 'VIGENERE', 'encoding': 'RAW', 'plaintext': 'ATTACKATDAWN', 'key': 'LEMON'},
     ]
 
     passed = 0
-    total = len(test_cases)
+    total = len(test_cases) + 1
 
     for case in test_cases:
         if test_encryption_decryption(
@@ -155,6 +207,9 @@ def main():
             case.get('extra')
         ):
             passed += 1
+
+    if test_bcrypt_hashing("CorrectHorseBatteryStaple", rounds=10):
+        passed += 1
 
     print(f"\n[SUMMARY] Results: {passed}/{total} tests passed")
 

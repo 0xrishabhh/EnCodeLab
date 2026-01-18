@@ -16,6 +16,42 @@ const ALGORITHMS = {
     parallelizable: 'Yes (CTR, GCM modes)',
     color: '#10b981'
   },
+  'DES': {
+    name: 'Data Encryption Standard',
+    modes: ['CBC', 'CFB', 'OFB', 'CTR', 'ECB'],
+    description: 'Legacy 64-bit block cipher with 56-bit effective key size (insecure today)',
+    security: 'Low',
+    speed: 'Fast',
+    blockSize: '64-bit (8 bytes)',
+    keyLengths: '56-bit effective (64-bit with parity)',
+    ivSize: '64-bit (CBC/CFB/OFB/CTR)',
+    parallelizable: 'Yes (CTR mode)',
+    color: '#0ea5e9'
+  },
+  'BCRYPT': {
+    name: 'bcrypt Password Hashing',
+    modes: ['HASH'],
+    description: 'Adaptive password hashing built on Blowfish with per-hash salt.',
+    security: 'High',
+    speed: 'Deliberately Slow',
+    blockSize: 'N/A (hash output)',
+    keyLengths: 'Password input (72-byte effective)',
+    ivSize: 'Salt embedded in hash',
+    parallelizable: 'No',
+    color: '#22c55e'
+  },
+  'MD6': {
+    name: 'MD6 Hash Function',
+    modes: ['HASH'],
+    description: 'Tree-based hash function with variable output size (128-512 bits).',
+    security: 'Experimental',
+    speed: 'Fast',
+    blockSize: 'N/A (hash output)',
+    keyLengths: 'Optional key',
+    ivSize: 'None',
+    parallelizable: 'Yes',
+    color: '#16a34a'
+  },
   '3DES': {
     name: 'Triple Data Encryption Standard',
     modes: ['CBC', 'CFB', 'OFB', 'CTR', 'ECB'],
@@ -87,8 +123,56 @@ const ALGORITHMS = {
     ivSize: '96-bit nonce',
     parallelizable: 'Yes',
     color: '#f97316'
+  },
+  'RC4': {
+    name: 'RC4 Stream Cipher',
+    modes: ['STREAM'],
+    description: 'Legacy stream cipher; RC4-drop discards initial keystream bytes to reduce bias.',
+    security: 'Low',
+    speed: 'Very Fast',
+    blockSize: 'Stream (byte-wise)',
+    keyLengths: '1-256 bytes (8-2048 bits)',
+    ivSize: 'None',
+    parallelizable: 'Yes',
+    color: '#059669'
+  },
+  'RC4DROP': {
+    name: 'RC4 Drop Stream Cipher',
+    modes: ['STREAM'],
+    description: 'RC4-drop discards the first N keystream dwords to reduce bias (still deprecated).',
+    security: 'Low',
+    speed: 'Very Fast',
+    blockSize: 'Stream (byte-wise)',
+    keyLengths: '1-256 bytes (8-2048 bits)',
+    ivSize: 'None',
+    parallelizable: 'Yes',
+    color: '#0f766e'
+  },
+  'VIGENERE': {
+    name: 'Vigenere Cipher',
+    modes: ['VIGENERE'],
+    description: 'Classical polyalphabetic substitution using a repeating keyword (educational only).',
+    security: 'Low',
+    speed: 'Very Fast',
+    blockSize: 'N/A (letters only)',
+    keyLengths: 'Keyword (A-Z)',
+    ivSize: 'None',
+    parallelizable: 'No',
+    color: '#16a34a'
   }
   /*
+  , 'JWT': {
+    name: 'JSON Web Token',
+    modes: ['SIGN', 'VERIFY', 'DECODE'],
+    description: 'JWT sign/verify/decode (backend endpoints required).',
+    security: 'Depends on key management',
+    speed: 'Fast',
+    blockSize: 'N/A (token)',
+    keyLengths: 'HMAC secret or PEM keys',
+    ivSize: 'None',
+    parallelizable: 'Yes',
+    color: '#7c3aed'
+  }
   , 'RAILFENCE': {
     name: 'Rail Fence Cipher',
     modes: ['RAILFENCE'],
@@ -126,6 +210,19 @@ const MODE_RECOMMENDATIONS = {
     GCM: 'Authenticated encryption - highly recommended',
     ECB: 'Insecure - exposes patterns'
   },
+  DES: {
+    CBC: 'Legacy only; requires random IV',
+    CFB: 'Stream-like mode but legacy cipher',
+    OFB: 'Output feedback mode; avoid IV reuse',
+    CTR: 'Parallelizable but weak key size',
+    ECB: 'Insecure - pattern leakage'
+  },
+  BCRYPT: {
+    HASH: 'Adaptive password hashing with per-hash salt'
+  },
+  MD6: {
+    HASH: 'Tree-based hash with configurable output size and levels'
+  },
   '3DES': {
     CBC: 'Acceptable for legacy systems',
     CFB: 'Stream-like but slow',
@@ -154,8 +251,22 @@ const MODE_RECOMMENDATIONS = {
   },
   SALSA20: {
     STREAM: 'Use unique nonce per key; 20 rounds recommended'
+  },
+  RC4: {
+    STREAM: 'Deprecated; if used, apply RC4-drop (e.g., 768 dwords)'
+  },
+  RC4DROP: {
+    STREAM: 'RC4-drop discards initial dwords to reduce bias (still deprecated)'
+  },
+  VIGENERE: {
+    VIGENERE: 'Educational cipher; remove non-letters and use a strong keyword'
   }
   /*
+  , JWT: {
+    SIGN: 'Create signed tokens from JSON payloads',
+    VERIFY: 'Verify signature + claims with provided key',
+    DECODE: 'Decode header/payload without verification'
+  }
   , RAILFENCE: {
     RAILFENCE: 'Educational transposition cipher (not secure)'
   }
@@ -186,8 +297,14 @@ const ITERATION_OPTIONS = [
 
 const ALGORITHM_LABELS = {
   'SALSA20': 'Salsa20',
-  'CHACHA20': 'ChaCha20'
+  'CHACHA20': 'ChaCha20',
+  'RC4': 'RC4',
+  'RC4DROP': 'RC4 Drop',
+  'BCRYPT': 'bcrypt',
+  'MD6': 'MD6',
+  'VIGENERE': 'Vigenere'
   /*
+  , 'JWT': 'JWT'
   , 'RAILFENCE': 'Rail Fence'
   , 'MORSE': 'Morse Code'
   */
@@ -209,7 +326,7 @@ const getModeRecommendation = (algorithm, mode) => {
 const BenchmarkPage = () => {
   // State for algorithm-mode selections (array of objects with algorithm and mode)
   const [algorithmSelections, setAlgorithmSelections] = useState([
-    { id: 1, algorithm: 'AES', mode: 'CBC' }
+    { id: 1, algorithm: 'AES', mode: 'CBC', drop: 0 }
   ]);
   const [testDataOption, setTestDataOption] = useState('custom');
   const [customTestData, setCustomTestData] = useState('Hello World! This is a test message for benchmarking cryptographic algorithms.');
@@ -275,7 +392,7 @@ const BenchmarkPage = () => {
       }
       if (newAlgorithm !== 'AES' || newMode !== 'CBC') break;
     }
-    setAlgorithmSelections([...algorithmSelections, { id: newId, algorithm: newAlgorithm, mode: newMode }]);
+    setAlgorithmSelections([...algorithmSelections, { id: newId, algorithm: newAlgorithm, mode: newMode, drop: 0 }]);
   };
   const removeAlgorithmSelection = (id) => {
     if (algorithmSelections.length > 1) {
@@ -312,6 +429,12 @@ const BenchmarkPage = () => {
               });
               updated.mode = availableModes[0] || ALGORITHMS[value].modes[0];
             }
+          }
+          if (value === 'RC4') {
+            updated.drop = 0;
+          }
+          if (value === 'RC4DROP') {
+            updated.drop = 768;
           }
         }
         // Handle mode change - check for duplicates
@@ -386,14 +509,18 @@ const BenchmarkPage = () => {
           const timeoutPromise = new Promise((_, reject) =>
             setTimeout(() => reject(new Error('Request timeout after 30 seconds')), 30000)
           );
-          const benchmarkPromise = cryptoAPI.benchmark({
-            algorithm: selection.algorithm,
-            mode: selection.mode,
-            testData: testData,
-            iterations: iterations,
-            scoringModel: scoringModel,
-            powerConsumption: powerWatts
-          });
+            const benchmarkPromise = cryptoAPI.benchmark({
+              algorithm: selection.algorithm === 'RC4DROP' ? 'RC4' : selection.algorithm,
+              mode: selection.mode,
+              testData: testData,
+              iterations: iterations,
+              scoringModel: scoringModel,
+              powerConsumption: powerWatts,
+              drop: selection.algorithm === 'RC4DROP'
+                ? (Number.isFinite(Number(selection.drop)) ? Number(selection.drop) : 0)
+                : undefined,
+              drop_unit: selection.algorithm === 'RC4DROP' ? 'DWORD' : undefined
+            });
           const response = await Promise.race([benchmarkPromise, timeoutPromise]);
           console.log(`Benchmark response for ${combinationName}:`, response);
           if (response && response.success && response.result) {
@@ -402,9 +529,9 @@ const BenchmarkPage = () => {
             benchmarkResults.push({
               combinationId: `${selection.algorithm}-${selection.mode}`,
               combinationName: combinationName,
+              ...result,
               algorithm: selection.algorithm,
               mode: selection.mode,
-              ...result,
               color: ALGORITHMS[selection.algorithm]?.color || '#6b7280'
             });
           } else {
@@ -1109,7 +1236,7 @@ return (
                           {ALGORITHMS[selection.algorithm]?.speed}
                         </span>
                       </div>
-                                            <div className="text-xs space-y-1">
+                      <div className="text-xs space-y-1">
                         <div><span className="font-medium">Block:</span> {ALGORITHMS[selection.algorithm]?.blockSize}</div>
                         <div><span className="font-medium">Keys:</span> {ALGORITHMS[selection.algorithm]?.keyLengths}</div>
                         <div><span className="font-medium">IV:</span> {ALGORITHMS[selection.algorithm]?.ivSize}</div>
@@ -1117,7 +1244,19 @@ return (
                           {getModeRecommendation(selection.algorithm, selection.mode)}
                         </div>
                       </div>
-          </div>
+                        {selection.algorithm === 'RC4DROP' && (
+                          <div className="mt-2">
+                            <label className="block text-[10px] font-medium text-gray-600 uppercase tracking-wide mb-1">Drop dwords</label>
+                            <input
+                              type="number"
+                              min="0"
+                              value={selection.drop ?? 0}
+                              onChange={(e) => updateAlgorithmSelection(selection.id, 'drop', e.target.value)}
+                              className="w-full border border-gray-300 px-2 py-1 text-xs focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            />
+                          </div>
+                        )}
+                    </div>
                     {/* Color Indicator */}
                     <div className="flex-shrink-0 flex flex-col items-center space-y-1">
                       <div

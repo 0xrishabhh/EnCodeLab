@@ -29,6 +29,21 @@ def test_benchmark():
             "iterations": 5
         },
         {
+            "name": "DES-CBC Small Data",
+            "algorithm": "DES",
+            "mode": "CBC",
+            "testData": "Hello World! This is a test message.",
+            "iterations": 5
+        },
+        {
+            "name": "Bcrypt Hash Small Data",
+            "algorithm": "BCRYPT",
+            "mode": "HASH",
+            "testData": "Hello World! This is a test message.",
+            "iterations": 5,
+            "rounds": 10
+        },
+        {
             "name": "AES-ECB Large Data",
             "algorithm": "AES",
             "mode": "ECB",
@@ -52,6 +67,14 @@ def test_benchmark():
             "iterations": 5,
             "rounds": 20,
             "counter": 0
+        },
+        {
+            "name": "RC4 Stream",
+            "algorithm": "RC4",
+            "mode": "STREAM",
+            "testData": "Hello World! This is a test message.",
+            "iterations": 5,
+            "drop": 768
         }
     ]
     
@@ -70,7 +93,8 @@ def test_benchmark():
                     "testData": config["testData"],
                     "iterations": config["iterations"],
                     **({"rounds": config["rounds"]} if "rounds" in config else {}),
-                    **({"counter": config["counter"]} if "counter" in config else {})
+                    **({"counter": config["counter"]} if "counter" in config else {}),
+                    **({"drop": config["drop"]} if "drop" in config else {})
                 },
                 timeout=30
             )
