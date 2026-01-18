@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import base64
+import os
 import json
 import bcrypt
 import hashlib
@@ -32,7 +33,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for frontend communication
+
+def _load_cors_origins():
+    raw = os.environ.get('CORS_ORIGINS', '').strip()
+    if not raw or raw == '*':
+        return '*'
+    return [origin.strip() for origin in raw.split(',') if origin.strip()] or '*'
+
+CORS(app, resources={r"/*": {"origins": _load_cors_origins()}})
 
 # Shared constants to avoid repeated list allocations and speed up membership checks
 SUPPORTED_ALGORITHMS = ('AES', 'DES', '3DES', 'BLOWFISH', 'RC2', 'SM4', 'SALSA20', 'CHACHA20', 'RC4', 'RAILFENCE', 'MORSE', 'VIGENERE')

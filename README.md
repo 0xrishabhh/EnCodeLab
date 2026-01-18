@@ -33,3 +33,17 @@ Open:
 More details:
 - `backend/README.md`
 - `frontend/README.md`
+
+## Deployment (Vercel + Render)
+
+### Backend (Render)
+- Root: `backend`
+- Build command: `pip install -r requirements.txt`
+- Start command: `gunicorn -b 0.0.0.0:$PORT app:app`
+- Env: `CORS_ORIGINS=https://<your-vercel-domain>`
+
+### Frontend (Vercel)
+- Root: `frontend`
+- Build command: `npm run build`
+- Output: `dist`
+- Env: `VITE_API_BASE_URL=https://<your-render-service>.onrender.com`

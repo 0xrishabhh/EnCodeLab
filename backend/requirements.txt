@@ -12,5 +12,5 @@ psutil>=5.9,<7.0
 gmalg>=1.0.6
 
 # Production servers (platform-specific)
-#gunicorn>=21.2,<22.0 ; platform_system != "Windows"
+gunicorn>=21.2,<22.0 ; platform_system != "Windows"
 waitress>=3.0,<4.0 ; platform_system == "Windows"
