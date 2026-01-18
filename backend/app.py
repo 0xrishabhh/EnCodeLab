@@ -34,13 +34,35 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+def _normalize_cors_origin(origin):
+    return origin.strip().rstrip('/')
+
 def _load_cors_origins():
     raw = os.environ.get('CORS_ORIGINS', '').strip()
     if not raw or raw == '*':
         return '*'
-    return [origin.strip() for origin in raw.split(',') if origin.strip()] or '*'
+    origins = []
+    for origin in raw.split(','):
+        normalized = _normalize_cors_origin(origin)
+        if not normalized:
+            continue
+        if '*' in normalized:
+            pattern = '^' + re.escape(normalized).replace('\\*', '.*') + '$'
+            origins.append(pattern)
+        else:
+            origins.append(normalized)
+    return origins or '*'
 
-CORS(app, resources={r"/*": {"origins": _load_cors_origins()}})
+CORS(
+    app,
+    resources={
+        r"/*": {
+            "origins": _load_cors_origins(),
+            "methods": ["GET", "POST", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization"]
+        }
+    }
+)
 
 # Shared constants to avoid repeated list allocations and speed up membership checks
 SUPPORTED_ALGORITHMS = ('AES', 'DES', '3DES', 'BLOWFISH', 'RC2', 'SM4', 'SALSA20', 'CHACHA20', 'RC4', 'RAILFENCE', 'MORSE', 'VIGENERE')
